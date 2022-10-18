@@ -620,7 +620,8 @@ class AutoencoderKL(ModelMixin, ConfigMixin):
 
     def decode(self,
                z: paddle.Tensor,
-               return_dict: bool = True) -> Union[DecoderOutput, paddle.Tensor]:
+               return_dict: bool = True
+               ):  # -> Union[DecoderOutput, paddle.Tensor]:
         z = self.post_quant_conv(z)
         dec = self.decoder(z)
 

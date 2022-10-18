@@ -251,7 +251,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
         timestep: Union[paddle.Tensor, float, int],
         encoder_hidden_states: paddle.Tensor,
         return_dict: bool = True,
-    ) -> Union[UNet2DConditionOutput, Tuple]:
+    ):  # -> Union[UNet2DConditionOutput, Tuple]:
         r"""
         Args:
             sample (`paddle.Tensor`): (batch, channel, height, width) noisy inputs tensor
@@ -276,8 +276,8 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
         upsample_size = None
 
         if any(s % default_overall_up_factor != 0 for s in sample.shape[-2:]):
-            logger.info(
-                "Forward upsample size to force interpolation output size.")
+            # logger.info(
+            #     "Forward upsample size to force interpolation output size.")
             forward_upsample_size = True
 
         # 0. center input if necessary
@@ -286,11 +286,11 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
 
         # 1. time
         timesteps = timestep
-        if not paddle.is_tensor(timesteps):
-            # TODO: this requires sync between CPU and GPU. So try to pass timesteps as tensors if you can
-            timesteps = paddle.to_tensor([timesteps], dtype="int64")
-        elif paddle.is_tensor(timesteps) and len(timesteps.shape) == 0:
-            timesteps = timesteps[None]
+        # if not paddle.is_tensor(timesteps):
+        #     # TODO: this requires sync between CPU and GPU. So try to pass timesteps as tensors if you can
+        #     timesteps = paddle.to_tensor([timesteps], dtype="int64")
+        # elif paddle.is_tensor(timesteps) and len(timesteps.shape) == 0:
+        #     timesteps = timesteps[None]
 
         # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
         timesteps = timesteps.expand([

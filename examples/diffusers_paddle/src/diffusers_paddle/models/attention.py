@@ -63,7 +63,9 @@ class AttentionBlock(nn.Layer):
         self.proj_attn = nn.Linear(channels, channels)
 
     def transpose_for_scores(self, projection: paddle.Tensor) -> paddle.Tensor:
-        new_projection_shape = projection.shape[:-1] + [self.num_heads, -1]
+        new_projection_shape = list(projection.shape[:-1]) + [
+            self.num_heads, projection.shape[-1] // self.num_heads
+        ]
         # move heads to 2nd position (B, T, H * D) -> (B, T, H, D) -> (B, H, T, D)
         new_projection = projection.reshape(new_projection_shape).transpose(
             [0, 2, 1, 3])
@@ -101,7 +103,7 @@ class AttentionBlock(nn.Layer):
         hidden_states = paddle.matmul(attention_probs, value_states)
 
         hidden_states = hidden_states.transpose([0, 2, 1, 3])
-        new_hidden_states_shape = hidden_states.shape[:-2] + [
+        new_hidden_states_shape = list(hidden_states.shape[:-2]) + [
             self.channels,
         ]
         hidden_states = hidden_states.reshape(new_hidden_states_shape)
