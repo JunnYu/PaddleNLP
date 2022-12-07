@@ -34,7 +34,7 @@
 
 ### SOTA扩散模型Pipelines集合
 **最先进（State-of-the-art）** 的 扩散模型（Diffusion Model）管道（Pipelines）集合。
-当前**PPDiffusers**已经集成了**33+Pipelines**，不仅支持 Stable Diffusion [文生图Pipeline](https://github.com/PaddlePaddle/PaddleNLP/blob/develop/ppdiffusers/ppdiffusers/pipelines/stable_diffusion/pipeline_stable_diffusion.py)，还支持基于[FastDeploy](https://github.com/PaddlePaddle/FastDeploy)的[🔥高性能文生图Pipeline](https://github.com/PaddlePaddle/PaddleNLP/blob/develop/ppdiffusers/ppdiffusers/pipelines/stable_diffusion/pipeline_fastdeploy_stable_diffusion.py)。
+当前**PPDiffusers**已经集成了**33+Pipelines**，不仅支持 Stable Diffusion [文生图Pipeline](https://github.com/PaddlePaddle/PaddleNLP/blob/develop/ppdiffusers/ppdiffusers/pipelines/stable_diffusion/pipeline_stable_diffusion.py)，还支持基于[FastDeploy](https://github.com/PaddlePaddle/FastDeploy)的[⚡️高性能文生图Pipeline](https://github.com/PaddlePaddle/PaddleNLP/blob/develop/ppdiffusers/ppdiffusers/pipelines/stable_diffusion/pipeline_fastdeploy_stable_diffusion.py)。
 如果想要了解当前所支持的所有 **Pipelines** 以及对应的论文信息，我们可以阅读[🔥这里](https://github.com/PaddlePaddle/PaddleNLP/blob/develop/ppdiffusers/ppdiffusers/pipelines/README.md)的文档。
 ```python
 from ppdiffusers import StableDiffusionPipeline, FastDeployStableDiffusionPipeline
@@ -55,7 +55,6 @@ ddpm_scheduler = DDPMScheduler(
     beta_end=0.012,
     beta_schedule="scaled_linear",
     num_train_timesteps=1000,
-    steps_offset=1,
 )
 ddim_scheduler = DDIMScheduler(
     beta_start=0.00085,
@@ -84,7 +83,7 @@ dpmsolver_scheduler = DPMSolverMultistepScheduler(
 
 ### 提供丰富的训练和推理教程
 我们提供了丰富的训练教程，不仅支持扩散模型的二次开发，如 [Textual Inversion](https://github.com/PaddlePaddle/PaddleNLP/tree/develop/ppdiffusers/examples/textual_inversion) 和 [DreamBooth](https://github.com/PaddlePaddle/PaddleNLP/tree/develop/ppdiffusers/examples/dreamBooth)  使用 3-5 张图定制化训练自己的风格或物体。还支持使用 [Laion400M](https://laion.ai/blog/laion-400-open-dataset) 数据集 [🔥从零训练Latent Diffusion Model](https://github.com/PaddlePaddle/PaddleNLP/tree/develop/ppdiffusers/examples/text_to_image_laion400m) 模型！
-此外，我们还提供了 [使用Paddle动态图推理的教程](https://github.com/PaddlePaddle/PaddleNLP/tree/develop/ppdiffusers/examples/inference) 以及 [🔥高性能FastDeploy推理教程](https://github.com/PaddlePaddle/PaddleNLP/tree/develop/ppdiffusers/deploy)。
+此外，我们还提供了 [使用Paddle动态图推理的教程](https://github.com/PaddlePaddle/PaddleNLP/tree/develop/ppdiffusers/examples/inference) 以及 [⚡️高性能FastDeploy推理教程](https://github.com/PaddlePaddle/PaddleNLP/tree/develop/ppdiffusers/deploy)。
 
 
 ## 安装
@@ -95,6 +94,7 @@ dpmsolver_scheduler = DPMSolverMultistepScheduler(
 - ftfy
 - regex
 - Pillow
+- fastdeploy-gpu-python (可选，FastDeploy高性能部署所需的依赖)
 
 ### pip安装
 
@@ -225,14 +225,14 @@ from ppdiffusers.utils import load_image
 pipe = StableDiffusionImg2ImgPipeline.from_pretrained("Linaqruf/anything-v3.0", safety_checker=None)
 
 url = "https://paddlenlp.bj.bcebos.com/models/community/CompVis/data/image_Kurisu.png"
-image = load_image(url).resize((512, 768))
+init_image = load_image(url).resize((512, 768))
 
 # 设置随机种子，我们可以复现下面的结果！
 paddle.seed(42)
 prompt = "Kurisu Makise, looking at viewer, long hair, standing, 1girl, hair ornament, hair flower, cute, jacket, white flower, white dress"
 negative_prompt = "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry"
 
-image = pipe(prompt=prompt, negative_prompt=negative_prompt, image=image, strength=0.75, guidance_scale=7.5).images[0]
+image = pipe(prompt=prompt, negative_prompt=negative_prompt, image=init_image, strength=0.75, guidance_scale=7.5).images[0]
 image.save("image_Kurisu_img2img.png")
 ```
 <div align="center">
@@ -261,7 +261,7 @@ from ppdiffusers.utils import load_image
 img_url = "https://paddlenlp.bj.bcebos.com/models/community/CompVis/stable-diffusion-v1-4/overture-creations.png"
 mask_url = "https://paddlenlp.bj.bcebos.com/models/community/CompVis/stable-diffusion-v1-4/overture-creations-mask.png"
 
-image = load_image(img_url).resize((512, 512))
+init_image = load_image(img_url).resize((512, 512))
 mask_image = load_image(mask_url).resize((512, 512))
 
 pipe = StableDiffusionInpaintPipelineLegacy.from_pretrained("stabilityai/stable-diffusion-2-base", safety_checker=None)
@@ -269,7 +269,7 @@ pipe = StableDiffusionInpaintPipelineLegacy.from_pretrained("stabilityai/stable-
 # 设置随机种子，我们可以复现下面的结果！
 paddle.seed(10245)
 prompt = "a red cat sitting on a bench"
-image = pipe(prompt=prompt, image=image, mask_image=mask_image, strength=0.75).images[0]
+image = pipe(prompt=prompt, image=init_image, mask_image=mask_image, strength=0.75).images[0]
 
 image.save("a_red_cat_legacy.png")
 ```
@@ -293,7 +293,7 @@ from ppdiffusers.utils import load_image
 img_url = "https://paddlenlp.bj.bcebos.com/models/community/CompVis/stable-diffusion-v1-4/overture-creations.png"
 mask_url = "https://paddlenlp.bj.bcebos.com/models/community/CompVis/stable-diffusion-v1-4/overture-creations-mask.png"
 
-image = load_image(img_url).resize((512, 512))
+init_image = load_image(img_url).resize((512, 512))
 mask_image = load_image(mask_url).resize((512, 512))
 
 pipe = StableDiffusionInpaintPipeline.from_pretrained("stabilityai/stable-diffusion-2-inpainting")
@@ -301,7 +301,7 @@ pipe = StableDiffusionInpaintPipeline.from_pretrained("stabilityai/stable-diffus
 # 设置随机种子，我们可以复现下面的结果！
 paddle.seed(1024)
 prompt = "Face of a yellow cat, high resolution, sitting on a park bench"
-image = pipe(prompt=prompt, image=image, mask_image=mask_image).images[0]
+image = pipe(prompt=prompt, image=init_image, mask_image=mask_image).images[0]
 
 image.save("a_yellow_cat.png")
 ```
@@ -362,7 +362,12 @@ image.save("ldm-super-resolution-image.png")
 </details>
 
 ## 模型部署
-StableDiffusion模型除了**支持Paddle动态图**运行，还支持将模型导出并使用推理引擎运行。我们提供在 [FastDeploy](https://github.com/PaddlePaddle/FastDeploy) 上的 **StableDiffusion** 模型文生图、图生图、图像编辑等任务的部署示例，用户可以按照我们提供 [StableDiffusion模型导出教程](https://github.com/PaddlePaddle/PaddleNLP/blob/develop/ppdiffusers/deploy/export.md) 将模型导出 或者使用 [一键导出脚本](https://github.com/PaddlePaddle/PaddleNLP/tree/develop/ppdiffusers/scripts/convert_diffusers_model/convert_ppdiffusers_stable_diffusion_to_fastdeploy.py) 导出模型，然后使用我们提供的`FastDeployStableDiffusionMegaPipeline`进行高性能推理部署！
+StableDiffusion模型除了**支持Paddle动态图**运行，还支持将模型导出并使用推理引擎运行。我们提供在 [FastDeploy](https://github.com/PaddlePaddle/FastDeploy) 上的 **StableDiffusion** 模型文生图、图生图、图像编辑等任务的部署示例，用户可以按照我们提供 [StableDiffusion模型导出教程](https://github.com/PaddlePaddle/PaddleNLP/blob/develop/ppdiffusers/deploy/export.md) 将模型导出或者使用[一键导出脚本](https://github.com/PaddlePaddle/PaddleNLP/tree/develop/ppdiffusers/scripts/convert_diffusers_model/convert_ppdiffusers_stable_diffusion_to_fastdeploy.py)导出模型，然后使用我们提供的`FastDeployStableDiffusionMegaPipeline`进行高性能推理部署！
+
+在下面的示例中我们使用了FastDeploy，需要执行以下命令安装依赖。
+```shell
+pip install fastdeploy-gpu-python -f https://www.paddlepaddle.org.cn/whl/fastdeploy.html
+```
 
 <details><summary>&emsp; 已预先导出的FastDeploy版Stable Diffusion权重 </summary>
 
@@ -396,42 +401,44 @@ def create_runtime_option(device_id=-1, backend="paddle"):
         option.use_gpu(device_id)
     return option
 
+# Step1: 创建runtime_option
 runtime_options = {
-    "text_encoder": create_runtime_option(-1, "onnx"),  # use cpu
-    "vae_encoder": create_runtime_option(-1, "paddle"),  # use cpu
-    "vae_decoder": create_runtime_option(-1, "paddle"),  # use cpu
-    "unet": create_runtime_option(0, "paddle"),  # use gpu
+    "text_encoder": create_runtime_option(-1, "onnx"),   # 为了节省显存，我们把text_encoder放在了CPU上推理。
+    "vae_encoder": create_runtime_option(-1, "paddle"),  # 为了节省显存，我们把vae_encoder放在了CPU上推理。
+    "vae_decoder": create_runtime_option(-1, "paddle"),  # 为了节省显存，我们把vae_decoder放在了CPU上推理。
+    "unet": create_runtime_option(0, "paddle"),          # 为了获得更好的性能，推荐用户把unet放在GPU上推理。
 }
 
+# Step2: 实例化FastDeployStableDiffusionMegaPipeline
 fd_pipe = FastDeployStableDiffusionMegaPipeline.from_pretrained(
     "Linaqruf/anything-v3.0@fastdeploy", runtime_options=runtime_options
 )
 
-# text2img
+# Step3: 文生图 text2img
 prompt = "a portrait of shiba inu with a red cap growing on its head. intricate. lifelike. soft light. sony a 7 r iv 5 5 mm. cinematic post - processing "
 image_text2img = fd_pipe.text2img(prompt=prompt, num_inference_steps=50).images[0]
 image_text2img.save("image_text2img.png")
 
-# img2img
+# Step4: 基于文本引导的图生图 img2img
 url = "https://paddlenlp.bj.bcebos.com/models/community/CompVis/data/image_Kurisu.png"
-image = load_image(url).resize((512, 512))
+init_image = load_image(url).resize((512, 512))
 prompt = "Kurisu Makise, looking at viewer, long hair, standing, 1girl, hair ornament, hair flower, cute, jacket, white flower, white dress"
 negative_prompt = "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry"
 
 image_img2img = fd_pipe.img2img(
-    prompt=prompt, negative_prompt=negative_prompt, image=image, strength=0.75, guidance_scale=7.5
+    prompt=prompt, negative_prompt=negative_prompt, image=init_image, strength=0.75, guidance_scale=7.5
 ).images[0]
 image_img2img.save("image_img2img.png")
 
-# inpaint_legacy
+# Step5: 基于文本引导的图像编辑 inpaint_legacy
 img_url = "https://paddlenlp.bj.bcebos.com/models/community/CompVis/stable-diffusion-v1-4/overture-creations.png"
 mask_url = "https://paddlenlp.bj.bcebos.com/models/community/CompVis/stable-diffusion-v1-4/overture-creations-mask.png"
-image = load_image(img_url).resize((512, 512))
+init_image = load_image(img_url).resize((512, 512))
 mask_image = load_image(mask_url).resize((512, 512))
 prompt = "a red cat sitting on a bench"
 
 image_inpaint_legacy = fd_pipe.inpaint_legacy(
-    prompt=prompt, image=image, mask_image=mask_image, strength=0.75, num_inference_steps=50
+    prompt=prompt, image=init_image, mask_image=mask_image, strength=0.75, num_inference_steps=50
 ).images[0]
 image_inpaint_legacy.save("image_inpaint_legacy.png")
 ```
@@ -465,4 +472,5 @@ We also want to thank @heejkoo for the very helpful overview of papers, code and
 
 ## License
 
-PPDiffusers遵循[Apache-2.0开源协议](https://github.com/PaddlePaddle/PaddleNLP/blob/develop/ppdiffusers/LICENSE)。
+- PPDiffusers遵循[Apache-2.0开源协议](https://github.com/PaddlePaddle/PaddleNLP/blob/develop/ppdiffusers/LICENSE)。
+- Stable Diffusion模型遵循 [CreativeML OpenRAIL M开源协议](https://huggingface.co/spaces/CompVis/stable-diffusion-license)。[Open RAIL M开源协议](https://www.licenses.ai/blog/2022/8/18/naming-convention-of-responsible-ai-licenses) 是改编自 [BigScience](https://bigscience.huggingface.co/) 和 [RAIL Initiative](https://www.licenses.ai/) 这两个协议。如果想要了解更多信息，我们也可以阅读 [介绍 BLOOM Open RAIL 开源协议](https://bigscience.huggingface.co/blog/the-bigscience-rail-license) 的文章。
