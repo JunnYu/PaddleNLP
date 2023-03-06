@@ -108,7 +108,7 @@ try:
 except importlib_metadata.PackageNotFoundError:
     _unidecode_available = False
 
-_fastdeploy_version = None
+_fastdeploy_version = "N/A"
 _fastdeploy_available = importlib.util.find_spec("fastdeploy") is not None
 if _fastdeploy_available:
     candidates = ("fastdeploy_gpu_python", "fastdeploy_python")
