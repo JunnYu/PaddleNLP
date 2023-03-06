@@ -473,7 +473,9 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         # The whole column of each masked pixel is `c`
         mask_class_mask = x_t == self.mask_class
         mask_class_mask = mask_class_mask.unsqueeze(1).expand([-1, self.num_embed - 1, -1])
-        log_Q_t[mask_class_mask] = c
+
+        # log_Q_t[mask_class_mask] = c
+        log_Q_t = paddle.where(mask_class_mask, c, log_Q_t)
 
         if not cumulative:
             log_Q_t = paddle.concat((log_Q_t, log_onehot_x_t_transitioning_from_masked), axis=1)

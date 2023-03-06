@@ -480,6 +480,8 @@ class ConfigMixin:
         config_dict["_diffusers_version"] = __version__
         config_dict["_ppdiffusers_version"] = __version__
 
+        config_dict["_ppdiffusers_version"] = __version__
+
         def to_json_saveable(value):
             if isinstance(value, np.ndarray):
                 value = value.tolist()

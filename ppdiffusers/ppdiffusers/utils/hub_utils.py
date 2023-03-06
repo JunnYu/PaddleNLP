@@ -25,12 +25,10 @@ from huggingface_hub.utils import is_jinja_available
 
 from ..version import VERSION as __version__
 from .constants import HUGGINGFACE_CO_RESOLVE_ENDPOINT
-from .import_utils import (
+from .import_utils import (  # _fastdeploy_version,; is_fastdeploy_available,
     ENV_VARS_TRUE_VALUES,
-    _fastdeploy_version,
     _paddle_version,
     _torch_version,
-    is_fastdeploy_available,
     is_paddle_available,
     is_torch_available,
 )
@@ -57,8 +55,8 @@ def http_user_agent(user_agent: Union[Dict, str, None] = None) -> str:
         ua += f"; torch/{_torch_version}"
     if is_paddle_available():
         ua += f"; paddle/{_paddle_version}"
-    if is_fastdeploy_available():
-        ua += f"; fastdeploy/{_fastdeploy_version}"
+    # if is_fastdeploy_available():
+    #     ua += f"; fastdeploy/{_fastdeploy_version}"
     # CI will set this value to True
     if os.environ.get("PPDIFFUSERS_IS_CI", "").upper() in ENV_VARS_TRUE_VALUES:
         ua += "; is_ci/true"
