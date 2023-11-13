@@ -16,8 +16,10 @@ limitations under the License. */
 
 #include <functional>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
+
 #include "fast_tokenizer/core/base.h"
 #include "fast_tokenizer/core/encoding.h"
 #include "fast_tokenizer/normalizers/normalizer.h"
@@ -27,7 +29,7 @@ namespace paddlenlp {
 namespace fast_tokenizer {
 namespace pretokenizers {
 
-struct FASTERTOKENIZER_DECL StringSplit {
+struct FASTTOKENIZER_DECL StringSplit {
   normalizers::NormalizedString normalized_;
   std::vector<core::Token> tokens_;
   StringSplit(normalizers::NormalizedString&& normalized)
@@ -51,7 +53,7 @@ struct FASTERTOKENIZER_DECL StringSplit {
   }
 };
 
-class FASTERTOKENIZER_DECL PreTokenizedString {
+class FASTTOKENIZER_DECL PreTokenizedString {
 public:
   PreTokenizedString() = default;
   PreTokenizedString(const std::string& original);
@@ -64,8 +66,9 @@ public:
   void Normalize(
       std::function<void(normalizers::NormalizedString*)> normalize_fn);
   // For wordpiece, bpe ......
-  void Tokenize(std::function<std::vector<core::Token>(
-                    normalizers::NormalizedString*)> tokenize_fn);
+  void Tokenize(
+      std::function<std::vector<core::Token>(normalizers::NormalizedString*)>
+          tokenize_fn);
   bool TransformToEncoding(const std::vector<uint32_t>& word_idx,
                            uint32_t type_id,
                            core::OffsetType offset_type,
@@ -78,32 +81,32 @@ public:
   StringSplit GetSplit(int idx) const;
   const std::string& GetOriginStr() const;
   void SetOriginalStr(const std::string& original);
+  std::vector<std::tuple<std::string, core::Offset, std::vector<core::Token>>>
+  GetSplits(bool is_original, const core::OffsetType& offset_type) const;
 
 private:
   std::string original_;
   std::vector<StringSplit> splits_;
 };
 
-struct FASTERTOKENIZER_DECL PreTokenizer {
+struct FASTTOKENIZER_DECL PreTokenizer {
   virtual void operator()(PreTokenizedString* pretokenized) const = 0;
 };
 
-struct FASTERTOKENIZER_DECL OffsetConverter {
+struct FASTTOKENIZER_DECL OffsetConverter {
   OffsetConverter(const std::string&) {}
   virtual bool convert(const core::Offset&, core::Offset*) const {
     return true;
   }
 };
 
-struct FASTERTOKENIZER_DECL BytesToCharOffsetConverter
-    : public OffsetConverter {
+struct FASTTOKENIZER_DECL BytesToCharOffsetConverter : public OffsetConverter {
   std::vector<size_t> offset_map_;
   BytesToCharOffsetConverter(const std::string&);
   virtual bool convert(const core::Offset&, core::Offset*) const;
 };
 
-struct FASTERTOKENIZER_DECL CharToBytesOffsetConverter
-    : public OffsetConverter {
+struct FASTTOKENIZER_DECL CharToBytesOffsetConverter : public OffsetConverter {
   std::vector<size_t> offset_map_;
   CharToBytesOffsetConverter(const std::string&);
   virtual bool convert(const core::Offset&, core::Offset*) const;

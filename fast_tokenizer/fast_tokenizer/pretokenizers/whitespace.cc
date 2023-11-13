@@ -13,6 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License. */
 
 #include "fast_tokenizer/pretokenizers/whitespace.h"
+
 #include "fast_tokenizer/normalizers/normalizer.h"
 #include "re2/re2.h"
 
@@ -27,7 +28,7 @@ void WhitespacePreTokenizer::operator()(
                           normalizers::NormalizedString* normalized,
                           std::vector<StringSplit>* string_splits) {
     std::vector<normalizers::NormalizedString> normalized_splits;
-    normalized->Split(pattern, normalizers::REMOVED, &normalized_splits);
+    normalized->Split(pattern, core::SplitMode::REMOVED, &normalized_splits);
     for (auto& normalize : normalized_splits) {
       string_splits->push_back(StringSplit(normalize));
     }

@@ -14,15 +14,22 @@
 # limitations under the License.
 """Modeling classes for XLNet model."""
 from dataclasses import dataclass
-from typing import Optional, List, Tuple
+from typing import List, Optional, Tuple
 
 import paddle
 import paddle.nn as nn
-from paddle.nn import CrossEntropyLoss, MSELoss, BCEWithLogitsLoss
 import paddle.nn.functional as F
-from paddle.nn import Layer
-from ..model_outputs import ModelOutput, tuple_output
+from paddle.nn import BCEWithLogitsLoss, CrossEntropyLoss, Layer, MSELoss
+
+from ...utils.env import CONFIG_NAME
 from .. import PretrainedModel, register_base_model
+from ..activations import ACT2FN, get_activation
+from ..model_outputs import ModelOutput, tuple_output
+from .configuration import (
+    XLNET_PRETRAINED_INIT_CONFIGURATION,
+    XLNET_PRETRAINED_RESOURCE_FILES_MAP,
+    XLNetConfig,
+)
 
 __all__ = [
     "XLNetPretrainedModel",
@@ -38,69 +45,28 @@ __all__ = [
 dtype_float = paddle.get_default_dtype()
 
 
-def get_activation(activation_string):
-    if activation_string in ACT2FN:
-        return ACT2FN[activation_string]
-    else:
-        raise KeyError("function {} not found in ACT2FN mapping {}".format(
-            activation_string, list(ACT2FN.keys())))
-
-
-def mish(x):
-    return x * F.tanh(F.softplus(x))
-
-
-def linear_act(x):
-    return x
-
-
-def swish(x):
-    return x * F.sigmoid(x)
-
-
-ACT2FN = {
-    "relu": F.relu,
-    "gelu": F.gelu,
-    "tanh": F.tanh,
-    "sigmoid": F.sigmoid,
-    "mish": mish,
-    "linear": linear_act,
-    "swish": swish,
-}
-
-
 class XLNetRelativeAttention(Layer):
-
-    def __init__(self, n_head, d_head, d_model, layer_norm_eps, dropout):
+    def __init__(self, config: XLNetConfig):
         super(XLNetRelativeAttention, self).__init__()
 
-        self.n_head = n_head
-        self.d_head = d_head
-        self.d_model = d_model
-        self.scale = 1 / (d_head**0.5)
+        self.n_head = config.n_head
+        self.d_head = config.d_head
+        self.d_model = config.d_model
+        self.scale = 1 / (config.d_head**0.5)
 
-        self.q = self.create_parameter(
-            [self.d_model, self.n_head * self.d_head])
-        self.k = self.create_parameter(
-            [self.d_model, self.n_head * self.d_head])
-        self.v = self.create_parameter(
-            [self.d_model, self.n_head * self.d_head])
-        self.o = self.create_parameter(
-            [self.d_model, self.n_head * self.d_head])
-        self.r = self.create_parameter(
-            [self.d_model, self.n_head * self.d_head])
+        self.q = self.create_parameter([self.d_model, self.n_head * self.d_head])
+        self.k = self.create_parameter([self.d_model, self.n_head * self.d_head])
+        self.v = self.create_parameter([self.d_model, self.n_head * self.d_head])
+        self.o = self.create_parameter([self.d_model, self.n_head * self.d_head])
+        self.r = self.create_parameter([self.d_model, self.n_head * self.d_head])
 
-        self.r_r_bias = self.create_parameter([self.n_head, self.d_head],
-                                              is_bias=True)
-        self.r_s_bias = self.create_parameter([self.n_head, self.d_head],
-                                              is_bias=True)
-        self.r_w_bias = self.create_parameter([self.n_head, self.d_head],
-                                              is_bias=True)
-        self.seg_embed = self.create_parameter([2, self.n_head, self.d_head],
-                                               is_bias=False)
+        self.r_r_bias = self.create_parameter([self.n_head, self.d_head], is_bias=True)
+        self.r_s_bias = self.create_parameter([self.n_head, self.d_head], is_bias=True)
+        self.r_w_bias = self.create_parameter([self.n_head, self.d_head], is_bias=True)
+        self.seg_embed = self.create_parameter([2, self.n_head, self.d_head], is_bias=False)
 
-        self.layer_norm = nn.LayerNorm(d_model, epsilon=layer_norm_eps)
-        self.dropout = nn.Dropout(dropout)
+        self.layer_norm = nn.LayerNorm(config.d_model, epsilon=config.layer_norm_eps)
+        self.dropout = nn.Dropout(config.dropout)
 
     def prune_heads(self, heads):
         raise NotImplementedError
@@ -113,9 +79,7 @@ class XLNetRelativeAttention(Layer):
         x = paddle.reshape(x, [x_size[0], x_size[1], x_size[3], x_size[2]])
         x = x[:, :, 1:, :]
         x = paddle.reshape(x, [x_size[0], x_size[1], x_size[2], x_size[3] - 1])
-        x = paddle.index_select(x,
-                                index=paddle.arange(klen, dtype='int64'),
-                                axis=3)
+        x = paddle.index_select(x, index=paddle.arange(klen, dtype="int64"), axis=3)
         return x
 
     def rel_attn_core(
@@ -146,9 +110,8 @@ class XLNetRelativeAttention(Layer):
         if seg_mat is None:
             ef = 0
         else:
-            ef = paddle.einsum('ibnd,snd->ibns', q_head + self.r_s_bias,
-                               self.seg_embed)
-            ef = paddle.einsum('ijbs,ibns->bnij', seg_mat, ef)
+            ef = paddle.einsum("ibnd,snd->ibns", q_head + self.r_s_bias, self.seg_embed)
+            ef = paddle.einsum("ijbs,ibns->bnij", seg_mat, ef)
 
         # Merge attention scores and perform masking
         attn_score = (ac + bd + ef) * self.scale
@@ -177,8 +140,7 @@ class XLNetRelativeAttention(Layer):
         # Post-attention projection (back to 'd_model')
         # Compute einsum4x4("ibnd,hnd->ibh", attn_vec, self.o)
         shape = paddle.shape(attn_vec)
-        attn_vec = attn_vec.reshape(
-            [shape[0], shape[1], attn_vec.shape[2] * attn_vec.shape[3]])
+        attn_vec = attn_vec.reshape([shape[0], shape[1], attn_vec.shape[2] * attn_vec.shape[3]])
         attn_out = paddle.einsum("ibm,hm->ibh", attn_vec, self.o)
 
         attn_out = self.dropout(attn_out)
@@ -212,43 +174,31 @@ class XLNetRelativeAttention(Layer):
             # Content-based key head
             # Compute k_head_h = einsum4x4("ibh,h(n*d)->ibnd", cat, self.k)
             k_head_h = paddle.matmul(cat, self.k)
-            k_head_h = paddle.reshape(k_head_h,
-                                      shape=[
-                                          paddle.shape(cat)[0],
-                                          paddle.shape(cat)[1], self.n_head,
-                                          self.d_head
-                                      ])
+            k_head_h = paddle.reshape(
+                k_head_h, shape=[paddle.shape(cat)[0], paddle.shape(cat)[1], self.n_head, self.d_head]
+            )
 
             # Content-based value head
             # Compute v_head_h = einsum4x4("ibh,h(n*d)->ibnd", cat, self.v)
             v_head_h = paddle.matmul(cat, self.v)
-            v_head_h = paddle.reshape(v_head_h,
-                                      shape=[
-                                          paddle.shape(cat)[0],
-                                          paddle.shape(cat)[1], self.n_head,
-                                          self.d_head
-                                      ])
+            v_head_h = paddle.reshape(
+                v_head_h, shape=[paddle.shape(cat)[0], paddle.shape(cat)[1], self.n_head, self.d_head]
+            )
 
             # Position-based key head
             # Compute k_head_r = einsum4x4("ibh,h(n*d)->ibnd", r, self.r)
             k_head_r = paddle.matmul(r, self.r)
-            k_head_r = paddle.reshape(k_head_r,
-                                      shape=[
-                                          paddle.shape(r)[0],
-                                          paddle.shape(r)[1], self.n_head,
-                                          self.d_head
-                                      ])
+            k_head_r = paddle.reshape(
+                k_head_r, shape=[paddle.shape(r)[0], paddle.shape(r)[1], self.n_head, self.d_head]
+            )
 
             # H-stream
             # Content-stream query head
             # Compute q_head_h = einsum4x4("ibh,h(n*d)->ibnd", h, self.q)
             q_head_h = paddle.matmul(h, self.q)  # shape
-            q_head_h = paddle.reshape(q_head_h,
-                                      shape=[
-                                          paddle.shape(h)[0],
-                                          paddle.shape(h)[1], self.n_head,
-                                          self.d_head
-                                      ])
+            q_head_h = paddle.reshape(
+                q_head_h, shape=[paddle.shape(h)[0], paddle.shape(h)[1], self.n_head, self.d_head]
+            )
 
             # Core attention ops
             attn_vec_h = self.rel_attn_core(
@@ -272,14 +222,12 @@ class XLNetRelativeAttention(Layer):
             # Query-stream query head
             # Compute q_head_g = einsum4x4("ibh,hnd->ibnd", g, self.q)
             shape = g.shape
-            q_head_g = paddle.matmul(g, self.q).reshape(
-                [shape[0], shape[1], self.n_head, self.d_head])
+            q_head_g = paddle.matmul(g, self.q).reshape([shape[0], shape[1], self.n_head, self.d_head])
 
             # Core attention ops
             if target_mapping is not None:
                 # Compute q_head_g = einsum4x4("mbnd,mlb->lbnd", q_head_g, target_mapping)
-                q_head_g = paddle.einsum("mbnd,mlb->lbnd", q_head_g,
-                                         target_mapping)
+                q_head_g = paddle.einsum("mbnd,mlb->lbnd", q_head_g, target_mapping)
                 attn_vec_g = self.rel_attn_core(
                     q_head_g,
                     k_head_h,
@@ -295,8 +243,7 @@ class XLNetRelativeAttention(Layer):
                     attn_vec_g, attn_prob_g = attn_vec_g
 
                 # Compute attn_vec_g = einsum4x4("lbnd,mlb->mbnd", attn_vec_g, target_mapping)
-                attn_vec_g = paddle.einsum("lbnd,mlb->mbnd", attn_vec_g,
-                                           target_mapping)
+                attn_vec_g = paddle.einsum("lbnd,mlb->mbnd", attn_vec_g, target_mapping)
 
             else:
                 attn_vec_g = self.rel_attn_core(
@@ -329,37 +276,26 @@ class XLNetRelativeAttention(Layer):
             # Content heads
             # Compute q_head_h = einsum4x4("ibh,hnd->ibnd", h, self.q)
             q_head_h = paddle.matmul(h, self.q)
-            q_head_h = paddle.reshape(q_head_h,
-                                      shape=[
-                                          paddle.shape(h)[0],
-                                          paddle.shape(h)[1], self.n_head,
-                                          self.d_head
-                                      ])
+            q_head_h = paddle.reshape(
+                q_head_h, shape=[paddle.shape(h)[0], paddle.shape(h)[1], self.n_head, self.d_head]
+            )
 
             # Compute k_head_h = einsum4x4("ibh,hnd->ibnd", cat, self.k)
             k_head_h = paddle.matmul(cat, self.k)
-            k_head_h = paddle.reshape(k_head_h,
-                                      shape=[
-                                          paddle.shape(h)[0],
-                                          paddle.shape(h)[1], self.n_head,
-                                          self.d_head
-                                      ])
+            k_head_h = paddle.reshape(
+                k_head_h, shape=[paddle.shape(h)[0], paddle.shape(h)[1], self.n_head, self.d_head]
+            )
 
             # Compute v_head_h = einsum4x4("ibh,hnd->ibnd", cat, self.v)
             v_head_h = paddle.matmul(cat, self.v)
-            v_head_h = paddle.reshape(v_head_h,
-                                      shape=[
-                                          paddle.shape(h)[0],
-                                          paddle.shape(h)[1], self.n_head,
-                                          self.d_head
-                                      ])
+            v_head_h = paddle.reshape(
+                v_head_h, shape=[paddle.shape(h)[0], paddle.shape(h)[1], self.n_head, self.d_head]
+            )
 
             # Position-based key head
             # Compute k_head_r = einsum4x4("ibh,hnd->ibnd", r, self.r)
             k_head_r = paddle.matmul(r, self.r)
-            k_head_r = paddle.reshape(
-                k_head_r,
-                shape=[paddle.shape(k_head_r)[0], -1, self.n_head, self.d_head])
+            k_head_r = paddle.reshape(k_head_r, shape=[paddle.shape(k_head_r)[0], -1, self.n_head, self.d_head])
 
             # Core attention ops
             attn_vec = self.rel_attn_core(
@@ -383,30 +319,22 @@ class XLNetRelativeAttention(Layer):
         outputs = (output_h, output_g)
 
         if output_attentions:
-            outputs = outputs + (attn_prob, )
+            outputs = outputs + (attn_prob,)
         return outputs
 
 
 class XLNetFeedForward(Layer):
-
-    def __init__(
-        self,
-        d_model,
-        d_inner,
-        layer_norm_eps,
-        dropout,
-        ff_activation,
-    ):
+    def __init__(self, config: XLNetConfig):
         super(XLNetFeedForward, self).__init__()
 
-        self.layer_norm = nn.LayerNorm(d_model, epsilon=layer_norm_eps)
-        self.layer_1 = nn.Linear(d_model, d_inner)
-        self.layer_2 = nn.Linear(d_inner, d_model)
-        self.dropout = nn.Dropout(dropout)
-        if isinstance(ff_activation, str):
-            self.activation_function = ACT2FN[ff_activation]
+        self.layer_norm = nn.LayerNorm(config.d_model, epsilon=config.layer_norm_eps)
+        self.layer_1 = nn.Linear(config.d_model, config.d_inner)
+        self.layer_2 = nn.Linear(config.d_inner, config.d_model)
+        self.dropout = nn.Dropout(config.dropout)
+        if isinstance(config.ff_activation, str):
+            self.activation_function = ACT2FN[config.ff_activation]
         else:
-            self.activation_function = ff_activation
+            self.activation_function = config.ff_activation
 
     def forward(self, inp):
         output = inp
@@ -420,23 +348,11 @@ class XLNetFeedForward(Layer):
 
 
 class XLNetLayer(Layer):
-
-    def __init__(
-        self,
-        n_head,
-        d_head,
-        d_model,
-        layer_norm_eps,
-        dropout,
-        d_inner,
-        ff_activation,
-    ):
+    def __init__(self, config: XLNetConfig):
         super(XLNetLayer, self).__init__()
 
-        self.rel_attn = XLNetRelativeAttention(n_head, d_head, d_model,
-                                               layer_norm_eps, dropout)
-        self.ff = XLNetFeedForward(d_model, d_inner, layer_norm_eps, dropout,
-                                   ff_activation)
+        self.rel_attn = XLNetRelativeAttention(config)
+        self.ff = XLNetFeedForward(config)
         self.seq_len_dim = 1
 
     def forward(
@@ -471,8 +387,7 @@ class XLNetLayer(Layer):
             output_g = self.ff(output_g)
         output_h = self.ff(output_h)
 
-        outputs = (output_h, output_g
-                   ) + outputs[2:]  # Add again attentions if they are there
+        outputs = (output_h, output_g) + outputs[2:]  # Add again attentions if they are there
         return outputs
 
 
@@ -485,123 +400,12 @@ class XLNetPretrainedModel(PretrainedModel):
     See :class:`~paddlenlp.transformers.model_utils.PretrainedModel` for more details.
     """
 
-    pretrained_init_configuration = {
-        "xlnet-base-cased": {
-            "attn_type": "bi",
-            "bi_data": False,
-            "clamp_len": -1,
-            "d_head": 64,
-            "d_inner": 3072,
-            "d_model": 768,
-            "dropout": 0.1,
-            "classifier_dropout": 0.1,
-            "ff_activation": "gelu",
-            "initializer_range": 0.02,
-            "layer_norm_eps": 1e-12,
-            "mem_len": None,
-            "n_head": 12,
-            "n_layer": 12,
-            "reuse_len": None,
-            "same_length": False,
-            "vocab_size": 32000
-        },
-        "xlnet-large-cased": {
-            "attn_type": "bi",
-            "bi_data": False,
-            "clamp_len": -1,
-            "d_head": 64,
-            "d_inner": 4096,
-            "d_model": 1024,
-            "dropout": 0.1,
-            "classifier_dropout": 0.1,
-            "ff_activation": "gelu",
-            "initializer_range": 0.02,
-            "layer_norm_eps": 1e-12,
-            "mem_len": None,
-            "n_head": 16,
-            "n_layer": 24,
-            "reuse_len": None,
-            "same_length": False,
-            "vocab_size": 32000
-        },
-        "chinese-xlnet-base": {
-            "attn_type": "bi",
-            "bi_data": False,
-            "clamp_len": -1,
-            "d_head": 64,
-            "d_inner": 3072,
-            "d_model": 768,
-            "dropout": 0.1,
-            "classifier_dropout": 0.1,
-            "ff_activation": "relu",
-            "initializer_range": 0.02,
-            "layer_norm_eps": 1e-12,
-            "mem_len": None,
-            "n_head": 12,
-            "n_layer": 12,
-            "reuse_len": None,
-            "same_length": False,
-            "vocab_size": 32000
-        },
-        "chinese-xlnet-mid": {
-            "attn_type": "bi",
-            "bi_data": False,
-            "clamp_len": -1,
-            "d_head": 64,
-            "d_inner": 3072,
-            "d_model": 768,
-            "dropout": 0.1,
-            "classifier_dropout": 0.1,
-            "ff_activation": "relu",
-            "initializer_range": 0.02,
-            "layer_norm_eps": 1e-12,
-            "mem_len": None,
-            "n_head": 12,
-            "n_layer": 24,
-            "reuse_len": None,
-            "same_length": False,
-            "vocab_size": 32000
-        },
-        "chinese-xlnet-large": {
-            "attn_type": "bi",
-            "bi_data": False,
-            "clamp_len": -1,
-            "d_head": 64,
-            "d_inner": 4096,
-            "d_model": 1024,
-            "dropout": 0.1,
-            "classifier_dropout": 0.1,
-            "ff_activation": "relu",
-            "initializer_range": 0.02,
-            "layer_norm_eps": 1e-12,
-            "mem_len": None,
-            "n_head": 16,
-            "n_layer": 24,
-            "reuse_len": None,
-            "same_length": False,
-            "vocab_size": 32000
-        },
-    }
-
-    pretrained_resource_files_map = {
-        "model_state": {
-            "xlnet-base-cased":
-            "https://bj.bcebos.com/paddlenlp/models/transformers/xlnet/xlnet-base-cased.pdparams",
-            "xlnet-large-cased":
-            "https://bj.bcebos.com/paddlenlp/models/transformers/xlnet/xlnet-large-cased.pdparams",
-            "chinese-xlnet-base":
-            "https://bj.bcebos.com/paddlenlp/models/transformers/xlnet/chinese-xlnet-base.pdparams",
-            "chinese-xlnet-mid":
-            "https://bj.bcebos.com/paddlenlp/models/transformers/xlnet/chinese-xlnet-mid.pdparams",
-            "chinese-xlnet-large":
-            "https://bj.bcebos.com/paddlenlp/models/transformers/xlnet/chinese-xlnet-large.pdparams",
-        }
-    }
+    pretrained_init_configuration = XLNET_PRETRAINED_INIT_CONFIGURATION
+    resource_files_names = {"model_state": "model_state.pdparams"}
+    pretrained_resource_files_map = XLNET_PRETRAINED_RESOURCE_FILES_MAP
+    model_config_file = CONFIG_NAME
+    config_class = XLNetConfig
     base_model_prefix = "transformer"
-
-    def init_weights(self):
-        # Initialize weights
-        self.apply(self._init_weights)
 
     def _init_weights(self, layer):
         # Initialize the weights.
@@ -610,10 +414,12 @@ class XLNetPretrainedModel(PretrainedModel):
                 layer.weight.set_value(
                     paddle.tensor.normal(
                         mean=0.0,
-                        std=self.initializer_range if hasattr(
-                            self, "initializer_range") else
-                        self.transformer.config["initializer_range"],
-                        shape=layer.weight.shape))
+                        std=self.initializer_range
+                        if hasattr(self, "initializer_range")
+                        else self.transformer.config["initializer_range"],
+                        shape=layer.weight.shape,
+                    )
+                )
             if isinstance(layer, nn.Linear) and layer.bias is not None:
                 layer.bias.set_value(paddle.zeros_like(layer.bias))
         elif isinstance(layer, nn.LayerNorm):
@@ -621,31 +427,35 @@ class XLNetPretrainedModel(PretrainedModel):
             layer.weight.set_value(paddle.full_like(layer.weight, 1.0))
         elif isinstance(layer, XLNetRelativeAttention):
             for param in [
-                    layer.q,
-                    layer.k,
-                    layer.v,
-                    layer.o,
-                    layer.r,
-                    layer.r_r_bias,
-                    layer.r_s_bias,
-                    layer.r_w_bias,
-                    layer.seg_embed,
+                layer.q,
+                layer.k,
+                layer.v,
+                layer.o,
+                layer.r,
+                layer.r_r_bias,
+                layer.r_s_bias,
+                layer.r_w_bias,
+                layer.seg_embed,
             ]:
                 param.set_value(
                     paddle.tensor.normal(
                         mean=0.0,
-                        std=self.initializer_range if hasattr(
-                            self, "initializer_range") else
-                        self.transformer.config["initializer_range"],
-                        shape=param.shape))
+                        std=self.initializer_range
+                        if hasattr(self, "initializer_range")
+                        else self.transformer.config["initializer_range"],
+                        shape=param.shape,
+                    )
+                )
         elif isinstance(layer, XLNetModel):
             layer.mask_emb.set_value(
                 paddle.tensor.normal(
                     mean=0.0,
-                    std=self.initializer_range if hasattr(
-                        self, "initializer_range") else
-                    self.transformer.config["initializer_range"],
-                    shape=layer.mask_emb.shape))
+                    std=self.initializer_range
+                    if hasattr(self, "initializer_range")
+                    else self.transformer.config["initializer_range"],
+                    shape=layer.mask_emb.shape,
+                )
+            )
 
 
 @dataclass
@@ -917,122 +727,33 @@ class XLNetModel(XLNetPretrainedModel):
     Refer to the superclass documentation for the generic methods.
 
     This model is also a `paddle.nn.Layer <https://www.paddlepaddle.org.cn/documentation
-    /docs/en/api/paddle/fluid/dygraph/layers/Layer_en.html>`__ subclass. Use it as a regular Paddle Layer
+    /docs/zh/api/paddle/nn/Layer_cn.html>`__ subclass. Use it as a regular Paddle Layer
     and refer to the Paddle documentation for all matter related to general usage and behavior.
 
     Args:
-        vocab_size (int):
-            Vocabulary size of `inputs_ids` in `XLNetModel`.
-            Also is the vocab size of token embedding matrix.
-        mem_len (int or None, optional):
-            The number of tokens to cache. If not 0 or None, the last `mem_len` hidden states
-            in each layer will be cached into memory. Defaults to `None`.
-        reuse_len (int or None, optional):
-            The number of tokens in the current batch to be cached. If positive, then at most
-            `reuse_len` tokens can be cached in the current batch. Otherwise, there is
-            no limit to the number of tokens. Defaults to `None`.
-
-            .. note::
-                The difference between `mem_len` and `reuse_len` is that `mem_len` defines
-                **the total number** of tokens to cache while `reuse_len` defines the number of tokens
-                in **the current batch** to be cached.
-        d_model (int, optional):
-            Dimensionality of the embedding layers, encoder layers and pooler layer.
-            Defaults to 768.
-        same_length (bool, optional):
-            Whether or not to use the same attention length for each token.
-            Defaults to `False`.
-        attn_type (str, optional):
-            The attention type used in the attention layer. Set **"bi"** for ``XLNet``,
-            **"uni"** for ``Transformer-XL``. Defaults to **"bi"**.
-        bi_data (bool, optional):
-            Whether or not to use bidirectional input pipeline. Set to `True` during pretraining and
-            `False` during fine-tuning. Defaults to `False`.
-        clamp_len (int, optional):
-            Maximum relative distance supported. All relative distances larger than `clamp_len` will be clamped.
-            Setting this attribute to -1 means no clamping. Defaults to -1.
-        n_layer (int, optional):
-            The number of hidden layers in the encoder. Defaults to 12.
-        dropout (float, optional):
-            The dropout ratio for all fully connected layers in the embeddings and encoder.
-            Defaults to 0.1.
-        classifier_dropout (float, optional):
-            The dropout ratio for all fully connected layers in the pooler (classification head).
-            Defaults to 0.1.
-        n_head (int, optional):
-            Number of attention heads in each attention layer.
-            Defaults to 12.
-        d_head (int, optional):
-            Dimensionality of each attention head. Defaults to 64.
-
-            .. note::
-                `d_head` should be equal to `d_model` divided by `n_head`.
-        layer_norm_eps (float, optional):
-            The `epsilon` parameter used in :class:`paddle.nn.LayerNorm` for
-            initializing layer normalization layers. Defaults to 1e-12.
-        d_inner (int, optional):
-            Dimensionality of the feed-forward (ff) layer in the encoder. Input tensors
-            to ff layers are firstly projected from `d_model` to `d_inner`,
-            and then projected back to `d_model`. Typically `d_inner` is larger than `d_model`.
-            Defaults to 3072.
-        ff_activation (str, optional):
-            The non-linear activation function in the feed-forward layers in the encoder.
-            Choose from the following supported activation functions: `["relu", "gelu", "tanh",
-            "sigmoid", "mish", "swish"]`. Defaults to `"gelu"`.
-        initializer_range (float, optional):
-            The standard deviation of the normal initializer. Defaults to 0.02.
+        config (:class:`XLNetConfig`):
+            An instance of :class:`XLNetConfig`.
 
             .. note::
                 A normal_initializer initializes weight matrices as normal distributions.
                 See :meth:`XLNetPretrainedModel._init_weights()` for how weights are initialized in `XLNetModel`.
     """
 
-    def __init__(
-        self,
-        vocab_size,
-        mem_len=None,
-        reuse_len=None,
-        d_model=768,
-        same_length=False,
-        attn_type="bi",
-        bi_data=False,
-        clamp_len=-1,
-        n_layer=12,
-        dropout=0.1,
-        classifier_dropout=0.1,
-        n_head=12,
-        d_head=64,
-        layer_norm_eps=1e-12,
-        d_inner=3072,
-        ff_activation="gelu",
-        initializer_range=0.02,
-    ):
-        super(XLNetModel, self).__init__()
-        self.initializer_range = initializer_range
-        self.mem_len = mem_len
-        self.reuse_len = reuse_len
-        self.d_model = d_model
-        self.same_length = same_length
-        self.attn_type = attn_type
-        self.bi_data = bi_data
-        self.clamp_len = clamp_len
-        self.n_layer = n_layer
-        self.dropout = nn.Dropout(dropout)
-        self.word_embedding = nn.Embedding(vocab_size, d_model)
-        self.mask_emb = self.create_parameter([1, 1, d_model])
-        self.layer = nn.LayerList([
-            XLNetLayer(
-                n_head,
-                d_head,
-                d_model,
-                layer_norm_eps,
-                dropout,
-                d_inner,
-                ff_activation,
-            ) for _ in range(n_layer)
-        ])
-
-        self.init_weights()
+    def __init__(self, config: XLNetConfig):
+        super(XLNetModel, self).__init__(config)
+        self.initializer_range = config.initializer_range
+        self.mem_len = config.mem_len
+        self.reuse_len = config.reuse_len
+        self.d_model = config.d_model
+        self.same_length = config.same_length
+        self.attn_type = config.attn_type
+        self.bi_data = config.bi_data
+        self.clamp_len = config.clamp_len
+        self.n_layer = config.n_layer
+        self.dropout = nn.Dropout(config.dropout)
+        self.word_embedding = nn.Embedding(config.vocab_size, config.d_model)
+        self.mask_emb = self.create_parameter([1, 1, config.d_model])
+        self.layer = nn.LayerList([XLNetLayer(config) for _ in range(config.n_layer)])
 
     def get_input_embeddings(self):
         return self.word_embedding
@@ -1051,15 +772,14 @@ class XLNetModel(XLNetPretrainedModel):
         ret = paddle.concat([attn_mask_pad, mask_up], axis=1)
         if self.same_length:
             mask_lo = paddle.tril(attn_mask, diagonal=-1)
-            ret = paddle.concat([ret[:, :qlen] + mask_lo, ret[:, qlen:]],
-                                axis=1)
+            ret = paddle.concat([ret[:, :qlen] + mask_lo, ret[:, qlen:]], axis=1)
 
         return ret
 
     def cache_mem(self, curr_out, prev_mem):
         # Cache hidden states into memory.
         if self.reuse_len is not None and self.reuse_len > 0:
-            curr_out = curr_out[:self.reuse_len]
+            curr_out = curr_out[: self.reuse_len]
 
         if self.mem_len is None or self.mem_len == 0:
             # If `use_mems` is active but no `mem_len` is defined, the model behaves like GPT-2 at inference time
@@ -1081,9 +801,7 @@ class XLNetModel(XLNetPretrainedModel):
     def positional_embedding(pos_seq, inv_freq, bsz=None):
         # Compute sinusoid_inp = einsum4x4("i,d->id", pos_seq, inv_freq)
         sinusoid_inp = paddle.einsum("i,d->id", pos_seq, inv_freq)
-        pos_emb = paddle.concat(
-            [paddle.sin(sinusoid_inp),
-             paddle.cos(sinusoid_inp)], axis=-1)
+        pos_emb = paddle.concat([paddle.sin(sinusoid_inp), paddle.cos(sinusoid_inp)], axis=-1)
         pos_emb = paddle.unsqueeze(pos_emb, axis=1)
         if bsz is not None:
             pos_emb = pos_emb.expand([-1, bsz, -1])
@@ -1094,7 +812,7 @@ class XLNetModel(XLNetPretrainedModel):
     def relative_positional_encoding(self, qlen, klen, bsz=None):
         # Create relative positional encoding.
         freq_seq = paddle.arange(0, self.d_model, 2.0, dtype=dtype_float)
-        inv_freq = 1 / 10000**(freq_seq / self.d_model)
+        inv_freq = 1 / 10000 ** (freq_seq / self.d_model)
 
         if self.attn_type == "bi":
             beg, end = klen, -qlen
@@ -1112,10 +830,8 @@ class XLNetModel(XLNetPretrainedModel):
                 bwd_pos_seq = bwd_pos_seq.clamp(-self.clamp_len, self.clamp_len)
 
             if bsz is not None:
-                fwd_pos_emb = self.positional_embedding(fwd_pos_seq, inv_freq,
-                                                        bsz // 2)
-                bwd_pos_emb = self.positional_embedding(bwd_pos_seq, inv_freq,
-                                                        bsz // 2)
+                fwd_pos_emb = self.positional_embedding(fwd_pos_seq, inv_freq, bsz // 2)
+                bwd_pos_emb = self.positional_embedding(bwd_pos_seq, inv_freq, bsz // 2)
             else:
                 fwd_pos_emb = self.positional_embedding(fwd_pos_seq, inv_freq)
                 bwd_pos_emb = self.positional_embedding(bwd_pos_seq, inv_freq)
@@ -1284,33 +1000,23 @@ class XLNetModel(XLNetPretrainedModel):
         # but we want a unified interface in the library with the batch size on the first dimension
         # so we move here the first dimension (batch) to the end
         if input_ids is not None and inputs_embeds is not None:
-            raise ValueError(
-                "You cannot specify both input_ids and inputs_embeds at the same time"
-            )
+            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
         elif input_ids is not None:
             input_ids = paddle.transpose(input_ids, perm=[1, 0])
             qlen, bsz = paddle.shape(input_ids)[0], paddle.shape(input_ids)[1]
         elif inputs_embeds is not None:
             inputs_embeds = paddle.transpose(inputs_embeds, perm=[1, 0])
-            qlen, bsz = paddle.shape(inputs_embeds)[0], paddle.shape(
-                inputs_embeds)[1]
+            qlen, bsz = paddle.shape(inputs_embeds)[0], paddle.shape(inputs_embeds)[1]
         else:
-            raise ValueError(
-                "You have to specify either input_ids or inputs_embeds")
+            raise ValueError("You have to specify either input_ids or inputs_embeds")
 
-        token_type_ids = token_type_ids.transpose(
-            [1, 0]) if token_type_ids is not None else None
-        input_mask = input_mask.transpose(
-            [1, 0]) if input_mask is not None else None
-        attention_mask = attention_mask.transpose(
-            [1, 0]) if attention_mask is not None else None
-        perm_mask = perm_mask.transpose([1, 2, 0
-                                         ]) if perm_mask is not None else None
-        target_mapping = target_mapping.transpose(
-            [1, 2, 0]) if target_mapping is not None else None
+        token_type_ids = token_type_ids.transpose([1, 0]) if token_type_ids is not None else None
+        input_mask = input_mask.transpose([1, 0]) if input_mask is not None else None
+        attention_mask = attention_mask.transpose([1, 0]) if attention_mask is not None else None
+        perm_mask = perm_mask.transpose([1, 2, 0]) if perm_mask is not None else None
+        target_mapping = target_mapping.transpose([1, 2, 0]) if target_mapping is not None else None
 
-        mlen = paddle.shape(
-            mems[0])[0] if mems is not None and mems[0] is not None else 0
+        mlen = paddle.shape(mems[0])[0] if mems is not None and mems[0] is not None else 0
         klen = mlen + qlen
 
         # Attention mask
@@ -1321,8 +1027,7 @@ class XLNetModel(XLNetPretrainedModel):
         elif self.attn_type == "bi":
             attn_mask = None
         else:
-            raise ValueError("Unsupported attention type: {}".format(
-                self.attn_type))
+            raise ValueError("Unsupported attention type: {}".format(self.attn_type))
 
         # Data mask: input mask & perm mask
         assert input_mask is None or attention_mask is None, "You can only use one of input_mask (uses 1 for padding) "
@@ -1341,9 +1046,7 @@ class XLNetModel(XLNetPretrainedModel):
         if data_mask is not None:
             # All mems can be attended to
             if mlen > 0:
-                mems_mask = paddle.cast(paddle.zeros(
-                    [paddle.shape(data_mask)[0], mlen, bsz]),
-                                        dtype=dtype_float)
+                mems_mask = paddle.cast(paddle.zeros([paddle.shape(data_mask)[0], mlen, bsz]), dtype=dtype_float)
                 data_mask = paddle.concat([mems_mask, data_mask], axis=1)
             if attn_mask is None:
                 attn_mask = paddle.unsqueeze(data_mask, axis=-1)
@@ -1355,17 +1058,14 @@ class XLNetModel(XLNetPretrainedModel):
 
         if attn_mask is not None:
             fill_val = paddle.ones(qlen)
-            non_tgt_mask = paddle.cast(-paddle.diag(fill_val),
-                                       dtype=dtype_float)
+            non_tgt_mask = paddle.cast(-paddle.diag(fill_val), dtype=dtype_float)
             if mlen > 0:
-                non_tgt_mask = paddle.concat([
-                    paddle.cast(paddle.zeros([qlen, mlen]), dtype=dtype_float),
-                    non_tgt_mask
-                ],
-                                             axis=-1)
+                non_tgt_mask = paddle.concat(
+                    [paddle.cast(paddle.zeros([qlen, mlen]), dtype=dtype_float), non_tgt_mask], axis=-1
+                )
             non_tgt_mask = paddle.cast(
-                ((attn_mask + paddle.unsqueeze(non_tgt_mask, axis=[2, 3])) > 0),
-                dtype=dtype_float)
+                ((attn_mask + paddle.unsqueeze(non_tgt_mask, axis=[2, 3])) > 0), dtype=dtype_float
+            )
         else:
             non_tgt_mask = None
 
@@ -1377,8 +1077,7 @@ class XLNetModel(XLNetPretrainedModel):
 
         output_h = self.dropout(word_emb_k)
         if target_mapping is not None:
-            word_emb_q = self.mask_emb.expand(
-                [paddle.shape(target_mapping)[0], bsz, -1])
+            word_emb_q = self.mask_emb.expand([paddle.shape(target_mapping)[0], bsz, -1])
             output_g = self.dropout(word_emb_q)
         else:
             output_g = None
@@ -1387,17 +1086,16 @@ class XLNetModel(XLNetPretrainedModel):
         if token_type_ids is not None:
             # Convert `token_type_ids` to one-hot `seg_mat`
             if mlen > 0:
-                mem_pad = paddle.zeros(shape=[mlen, bsz], dtype='int64')
+                mem_pad = paddle.zeros(shape=[mlen, bsz], dtype="int64")
                 cat_ids = paddle.concat(x=[mem_pad, token_type_ids], axis=0)
             else:
                 cat_ids = token_type_ids
 
             # `1` indicates not in the same segment [qlen x klen x bsz]
-            seg_mat = paddle.cast(paddle.unsqueeze(token_type_ids, axis=1) !=
-                                  paddle.unsqueeze(cat_ids, axis=0),
-                                  dtype='int64')
-            seg_mat = paddle.cast(F.one_hot(seg_mat, num_classes=2),
-                                  dtype=dtype_float)
+            seg_mat = paddle.cast(
+                paddle.unsqueeze(token_type_ids, axis=1) != paddle.unsqueeze(cat_ids, axis=0), dtype="int64"
+            )
+            seg_mat = paddle.cast(F.one_hot(seg_mat, num_classes=2), dtype=dtype_float)
         else:
             seg_mat = None
 
@@ -1412,8 +1110,7 @@ class XLNetModel(XLNetPretrainedModel):
         # And head_mask is converted to shape [num_hidden_layers x qlen x klen x bsz x n_head]
         if head_mask is not None:
             if head_mask.dim() == 1:
-                head_mask = head_mask.unsqueeze(0).unsqueeze(0).unsqueeze(
-                    0).unsqueeze(0)
+                head_mask = head_mask.unsqueeze(0).unsqueeze(0).unsqueeze(0).unsqueeze(0)
                 head_mask = head_mask.expand([self.n_layer, -1, -1, -1, -1])
             elif head_mask.dim() == 2:
                 head_mask = head_mask.unsqueeze(1).unsqueeze(1).unsqueeze(1)
@@ -1430,10 +1127,9 @@ class XLNetModel(XLNetPretrainedModel):
         for i, layer_module in enumerate(self.layer):
             if use_mems:
                 # Cache new mems
-                new_mems = new_mems + (self.cache_mem(output_h, mems[i]), )
+                new_mems = new_mems + (self.cache_mem(output_h, mems[i]),)
             if output_hidden_states:
-                hidden_states.append((
-                    output_h, output_g) if output_g is not None else output_h)
+                hidden_states.append((output_h, output_g) if output_g is not None else output_h)
 
             outputs = layer_module(
                 output_h,
@@ -1454,8 +1150,7 @@ class XLNetModel(XLNetPretrainedModel):
 
         # Add last hidden state
         if output_hidden_states:
-            hidden_states.append((
-                output_h, output_g) if output_g is not None else output_h)
+            hidden_states.append((output_h, output_g) if output_g is not None else output_h)
 
         output = self.dropout(output_g if output_g is not None else output_h)
 
@@ -1467,44 +1162,35 @@ class XLNetModel(XLNetPretrainedModel):
 
         if output_hidden_states:
             if output_g is not None:
-                hidden_states = tuple(
-                    paddle.transpose(h, perm=[1, 0, 2]) for hs in hidden_states
-                    for h in hs)
+                hidden_states = tuple(paddle.transpose(h, perm=[1, 0, 2]) for hs in hidden_states for h in hs)
             else:
-                hidden_states = tuple(
-                    paddle.transpose(hs, perm=[1, 0, 2])
-                    for hs in hidden_states)
+                hidden_states = tuple(paddle.transpose(hs, perm=[1, 0, 2]) for hs in hidden_states)
 
         if output_attentions:
             if target_mapping is not None:
                 # When target_mapping is provided, there are 2-tuple of attentions
                 attentions = tuple(
-                    tuple(
-                        paddle.transpose(att_stream, perm=[2, 3, 0, 1])
-                        for att_stream in t) for t in attentions)
+                    tuple(paddle.transpose(att_stream, perm=[2, 3, 0, 1]) for att_stream in t) for t in attentions
+                )
             else:
-                attentions = tuple(
-                    paddle.transpose(t, perm=[2, 3, 0, 1]) for t in attentions)
+                attentions = tuple(paddle.transpose(t, perm=[2, 3, 0, 1]) for t in attentions)
 
         if not return_dict:
-            return tuple(v
-                         for v in [output, new_mems, hidden_states, attentions]
-                         if v is not None)
+            return tuple(v for v in [output, new_mems, hidden_states, attentions] if v is not None)
 
-        return XLNetModelOutput(last_hidden_state=output,
-                                mems=new_mems,
-                                hidden_states=hidden_states,
-                                attentions=attentions)
+        return XLNetModelOutput(
+            last_hidden_state=output, mems=new_mems, hidden_states=hidden_states, attentions=attentions
+        )
 
 
 class XLNetClassificationHead(Layer):
     """Head for sentence-level classification tasks."""
 
-    def __init__(self, hidden_size, dropout, num_classes):
+    def __init__(self, config: XLNetConfig):
         super(XLNetClassificationHead, self).__init__()
-        self.dense = nn.Linear(hidden_size, hidden_size)
-        self.dropout = nn.Dropout(dropout)
-        self.out_proj = nn.Linear(hidden_size, num_classes)
+        self.dense = nn.Linear(config.d_model, config.d_model)
+        self.dropout = nn.Dropout(config.classfier_dropout)
+        self.out_proj = nn.Linear(config.d_model, config.num_labels)
 
     def forward(self, features, **kwargs):
         x = features[:, -1, :]  # Take <cls> token
@@ -1522,20 +1208,15 @@ class XLNetForSequenceClassification(XLNetPretrainedModel):
     designed for sequence classification/regression tasks like GLUE tasks.
 
     Args:
-        xlnet (:class:`XLNetModel`):
-            An instance of :class:`XLNetModel`.
-        num_classes (int, optional):
-            The number of classes. Defaults to 2.
+        config (:class:`XLNetConfig`):
+            An instance of :class:`XLNetConfig`.
     """
 
-    def __init__(self, xlnet, num_classes=2):
-        super(XLNetForSequenceClassification, self).__init__()
-        self.num_classes = num_classes
-        self.transformer = xlnet
-        self.classifier = XLNetClassificationHead(
-            self.transformer.d_model,
-            self.transformer.config["classifier_dropout"], num_classes)
-        self.init_weights()
+    def __init__(self, config: XLNetConfig):
+        super(XLNetForSequenceClassification, self).__init__(config)
+        self.num_classes = config.num_classes
+        self.transformer = XLNetModel(config)
+        self.classifier = XLNetClassificationHead(config)
 
     def forward(
         self,
@@ -1651,14 +1332,13 @@ class XLNetForSequenceClassification(XLNetPretrainedModel):
                     loss = loss_fct(logits, labels)
             elif problem_type == "single_label_classification":
                 loss_fct = CrossEntropyLoss()
-                loss = loss_fct(logits.reshape(shape=[-1, self.num_classes]),
-                                labels.reshape(shape=[-1]))
+                loss = loss_fct(logits.reshape(shape=[-1, self.num_classes]), labels.reshape(shape=[-1]))
             elif problem_type == "multi_label_classification":
                 loss_fct = BCEWithLogitsLoss()
                 loss = loss_fct(logits, labels)
 
         if not return_dict:
-            output = (logits, ) + transformer_outputs[1:]
+            output = (logits,) + transformer_outputs[1:]
             return tuple_output(output, loss)
 
         return XLNetForSequenceClassificationOutput(
@@ -1676,20 +1356,16 @@ class XLNetForTokenClassification(XLNetPretrainedModel):
     designed for token classification tasks like NER tasks.
 
     Args:
-        xlnet (:class:`XLNetModel`):
-            An instance of :class:`XLNetModel`.
-        num_classes (int, optional):
-            The number of classes. Defaults to 2.
+        config (:class:`XLNetConfig`):
+            An instance of :class:`XLNetConfig`.
     """
 
-    def __init__(self, xlnet, num_classes=2):
-        super(XLNetForTokenClassification, self).__init__()
-        self.num_classes = num_classes
+    def __init__(self, config: XLNetConfig):
+        super(XLNetForTokenClassification, self).__init__(config)
+        self.num_classes = config.num_classes
 
-        self.transformer = xlnet
-        self.classifier = nn.Linear(self.transformer.d_model, num_classes)
-
-        self.init_weights()
+        self.transformer = XLNetModel(config)
+        self.classifier = nn.Linear(self.transformer.d_model, config.num_classes)
 
     def forward(
         self,
@@ -1795,11 +1471,10 @@ class XLNetForTokenClassification(XLNetPretrainedModel):
         loss = None
         if labels is not None:
             loss_fct = CrossEntropyLoss()
-            loss = loss_fct(logits.reshape(shape=[-1, self.num_classes]),
-                            labels.reshape(shape=[-1]))
+            loss = loss_fct(logits.reshape(shape=[-1, self.num_classes]), labels.reshape(shape=[-1]))
 
         if not return_dict:
-            output = (logits, ) + outputs[1:]
+            output = (logits,) + outputs[1:]
             return tuple_output(output, loss)
 
         return XLNetForTokenClassificationOutput(
@@ -1816,19 +1491,17 @@ class XLNetLMHeadModel(XLNetPretrainedModel):
     XLNet Model with a language modeling head on top (linear layer with weights tied to the input embeddings).
 
     Args:
-        xlnet (:class:`XLNetModel`):
-            An instance of :class:`XLNetModel`.
+        config (:class:`XLNetConfig`):
+            An instance of :class:`XLNetConfig`.
     """
 
-    def __init__(self, xlnet):
-        super(XLNetLMHeadModel, self).__init__()
-        self.transformer = xlnet
+    def __init__(self, config: XLNetConfig):
+        super(XLNetLMHeadModel, self).__init__(config)
+        self.transformer = XLNetModel(config)
         self.decoder_weight = self.transformer.word_embedding.weight
         self.decoder_bias = self.create_parameter(
-            shape=[self.transformer.config['vocab_size']],
-            dtype=self.decoder_weight.dtype,
-            is_bias=True)
-        self.init_weights()
+            shape=[config.vocab_size], dtype=self.decoder_weight.dtype, is_bias=True
+        )
 
     def forward(
         self,
@@ -1926,18 +1599,15 @@ class XLNetLMHeadModel(XLNetPretrainedModel):
             return_dict=return_dict,
         )
 
-        logits = paddle.matmul(transformer_outputs[0],
-                               self.decoder_weight,
-                               transpose_y=True) + self.decoder_bias
+        logits = paddle.matmul(transformer_outputs[0], self.decoder_weight, transpose_y=True) + self.decoder_bias
         loss = None
         if labels is not None:
             # Flatten the tokens
             loss_fct = CrossEntropyLoss()
-            loss = loss_fct(logits.reshape(shape=[-1, logits.shape[-1]]),
-                            labels.reshape(shape=[-1]))
+            loss = loss_fct(logits.reshape(shape=[-1, logits.shape[-1]]), labels.reshape(shape=[-1]))
 
         if not return_dict:
-            output = (logits, ) + transformer_outputs[1:]
+            output = (logits,) + transformer_outputs[1:]
             return tuple_output(output, loss)
 
         return XLNetLMHeadModelOutput(
@@ -1955,17 +1625,14 @@ class XLNetForMultipleChoice(XLNetPretrainedModel):
     softmax) e.g. for RACE/SWAG tasks.
 
     Args:
-        xlnet (:class:`XLNetModel`):
-            An instance of :class:`XLNetModel`.
+        config (:class:`XLNetConfig`):
+            An instance of :class:`XLNetConfig`.
     """
 
-    def __init__(self, xlnet):
-        super(XLNetForMultipleChoice, self).__init__()
-        self.transformer = xlnet
-        self.classifier = XLNetClassificationHead(
-            self.transformer.d_model,
-            self.transformer.config["classifier_dropout"], 1)
-        self.init_weights()
+    def __init__(self, config: XLNetConfig):
+        super(XLNetForMultipleChoice, self).__init__(config)
+        self.transformer = XLNetModel(config)
+        self.classifier = XLNetClassificationHead(config)
 
     def forward(
         self,
@@ -2076,25 +1743,19 @@ class XLNetForMultipleChoice(XLNetPretrainedModel):
                 print(reshaped_logits.shape)
                 # [2, 2]
         """
-        num_choices = paddle.shape(
-            input_ids)[1] if input_ids is not None else paddle.shape(
-                inputs_embeds)[1]
-        input_ids = input_ids.reshape(
-            shape=(-1, paddle.shape(input_ids)[-1]
-                   ))  # flat_input_ids: [bs*num_choice,seq_l]
+        num_choices = paddle.shape(input_ids)[1] if input_ids is not None else paddle.shape(inputs_embeds)[1]
+        input_ids = input_ids.reshape(shape=(-1, paddle.shape(input_ids)[-1]))  # flat_input_ids: [bs*num_choice,seq_l]
 
         if attention_mask is not None:
-            attention_mask = attention_mask.reshape(
-                shape=(-1, paddle.shape(attention_mask)[-1]))
+            attention_mask = attention_mask.reshape(shape=(-1, paddle.shape(attention_mask)[-1]))
 
         if token_type_ids is not None:
-            token_type_ids = token_type_ids.reshape(
-                shape=(-1, paddle.shape(token_type_ids)[-1]))
+            token_type_ids = token_type_ids.reshape(shape=(-1, paddle.shape(token_type_ids)[-1]))
 
         if inputs_embeds is not None:
             inputs_embeds = inputs_embeds.reshape(
-                shape=(paddle.shape(inputs_embeds)[0], -1,
-                       paddle.shape(inputs_embeds)[-1]))
+                shape=(paddle.shape(inputs_embeds)[0], -1, paddle.shape(inputs_embeds)[-1])
+            )
 
         transformer_outputs = self.transformer(
             input_ids,
@@ -2123,7 +1784,7 @@ class XLNetForMultipleChoice(XLNetPretrainedModel):
             loss = loss_fct(reshaped_logits, labels.reshape(shape=[-1]))
 
         if not return_dict:
-            output = (logits, ) + transformer_outputs[1:]
+            output = (logits,) + transformer_outputs[1:]
             return tuple_output(output, loss)
 
         return XLNetForMultipleChoiceOutput(
@@ -2141,16 +1802,14 @@ class XLNetForQuestionAnswering(XLNetPretrainedModel):
       layers on top of the hidden-states output to compute `span start logits` and `span end logits`).
 
     Args:
-        xlnet (:class:`XLNetModel`):
-            An instance of :class:`XLNetModel`.
+        config (:class:`XLNetConfig`):
+            An instance of :class:`XLNetConfig`.
     """
 
-    def __init__(self, xlnet):
-        super(XLNetForQuestionAnswering, self).__init__()
-        self.transformer = xlnet
-        self.qa_outputs = nn.Linear(self.transformer.d_model, 2)
-
-        self.init_weights()
+    def __init__(self, config: XLNetConfig):
+        super(XLNetForQuestionAnswering, self).__init__(config)
+        self.transformer = XLNetModel(config)
+        self.qa_outputs = nn.Linear(config.d_model, 2)
 
     def forward(
         self,

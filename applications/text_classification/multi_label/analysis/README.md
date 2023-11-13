@@ -86,17 +86,14 @@ python evaluate.py \
 
 ```text
 [2022-08-12 02:24:48,193] [    INFO] - -----Evaluate model-------
-[2022-08-12 02:24:48,194] [    INFO] - Train dataset size: 14377
 [2022-08-12 02:24:48,194] [    INFO] - Dev dataset size: 1611
 [2022-08-12 02:24:48,194] [    INFO] - Accuracy in dev dataset: 74.24%
 [2022-08-12 02:24:48,194] [    INFO] - Macro avg in dev dataset: precision: 82.96 | recall: 77.59 | F1 score 79.36
 [2022-08-12 02:24:48,194] [    INFO] - Micro avg in dev dataset: precision: 91.50 | recall: 89.66 | F1 score 90.57
 [2022-08-12 02:24:48,195] [    INFO] - Class name: 婚后有子女
-[2022-08-12 02:24:48,195] [    INFO] - Evaluation examples in train dataset: 6759(47.0%) | precision: 99.78 | recall: 99.59 | F1 score 99.68
 [2022-08-12 02:24:48,195] [    INFO] - Evaluation examples in dev dataset: 784(48.7%) | precision: 97.07 | recall: 97.32 | F1 score 97.20
 [2022-08-12 02:24:48,195] [    INFO] - ----------------------------
 [2022-08-12 02:24:48,195] [    INFO] - Class name: 限制行为能力子女抚养
-[2022-08-12 02:24:48,195] [    INFO] - Evaluation examples in train dataset: 4358(30.3%) | precision: 99.36 | recall: 99.56 | F1 score 99.46
 [2022-08-12 02:24:48,195] [    INFO] - Evaluation examples in dev dataset: 492(30.5%) | precision: 88.57 | recall: 88.21 | F1 score 88.39
 ...
 ```
@@ -116,7 +113,7 @@ Text	Label	Prediction
 ### 单词级别可解释性分析
 本项目开源模型的词级别可解释性分析Notebook，提供LIME、Integrated Gradient、GradShap 三种分析方法，支持分析微调后模型的预测结果，开发者可以通过更改**数据目录**和**模型目录**在自己的任务中使用Jupyter Notebook进行数据分析。
 
-运行 [word_interpret.ipynb](./word_interpreter.ipynb) 代码，即可分析影响样本预测结果的关键词以及可视化所有词对预测结果的贡献情况，颜色越深代表这个词对预测结果影响越大：
+运行 [word_interpret.ipynb](https://github.com/PaddlePaddle/PaddleNLP/blob/develop/applications/text_classification/multi_label/analysis/README.md) 代码，即可分析影响样本预测结果的关键词以及可视化所有词对预测结果的贡献情况，颜色越深代表这个词对预测结果影响越大：
 <div align="center">
     <img src="https://user-images.githubusercontent.com/63761690/192739675-63145d59-23c6-416f-bf71-998fd4995254.png" width="1000">
 </div>

@@ -20,22 +20,29 @@ from __future__ import annotations
 import copy
 import json
 import os
-import os.path as osp
 import re
 import shutil
+import sys
 import warnings
-import copy
-from typing import Any, Dict, List, Optional, Tuple, Union, Type, TypeVar, TYPE_CHECKING
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
 
-from paddlenlp.transformers.utils import resolve_cache_dir
+import paddle
+from huggingface_hub import hf_hub_download
+from huggingface_hub.utils import EntryNotFoundError
 
-from paddlenlp.utils.env import MODEL_HOME
-
-from ..utils import CONFIG_NAME
-from ..utils.downloader import COMMUNITY_MODEL_PREFIX, is_url, get_path_from_url
-
-from paddlenlp.utils.log import logger
-from paddlenlp import __version__
+from .. import __version__
+from ..utils import CONFIG_NAME, LEGACY_CONFIG_NAME, QuantizationConfig
+from ..utils.downloader import (
+    COMMUNITY_MODEL_PREFIX,
+    get_path_from_url_with_filelock,
+    hf_file_exists,
+    is_url,
+    url_file_exists,
+)
+from ..utils.log import logger
+from .aistudio_utils import aistudio_download
+from .utils import resolve_cache_dir
 
 _re_configuration_file = re.compile(r"config\.(.*)\.json")
 
@@ -55,7 +62,8 @@ def custom_object_save(obj, folder, config=None):
         logger.warning(
             f"We can't save the code defining {obj} in {folder} as it's been defined in __main__. You should put "
             "this code in a separate module so we can include it in the saved folder and make it easier to share via "
-            "the Hub.")
+            "the Hub."
+        )
 
     def _set_auto_map_in_config(_config):
         module_name = obj.__class__.__module__
@@ -101,62 +109,13 @@ def custom_object_save(obj, folder, config=None):
     shutil.copy(object_file, dest_file)
 
     # Gather all relative imports recursively and make sure they are copied as well.
-    for needed_file in get_relative_import_files(object_file):
-        dest_file = Path(folder) / (Path(needed_file).name)
-        shutil.copy(needed_file, dest_file)
+    # TODO(wujingjing): `get_relative_import_files` havn't supported yet.
+    # for needed_file in get_relative_import_files(object_file):
+    #     dest_file = Path(folder) / (Path(needed_file).name)
+    #     shutil.copy(needed_file, dest_file)
 
 
-def cached_path(
-    url_or_filename,
-    cache_dir=None,
-    force_download=False,
-    local_files_only=False,
-) -> Optional[str]:
-    """
-    Given something that might be a URL (or might be a local path), determine which. If it's a URL, download the file
-    and cache it, and return the path to the cached file. If it's already a local path, make sure the file exists and
-    then return the path
-
-    Args:
-        cache_dir: specify a cache directory to save the file to (overwrite the default cache dir).
-        force_download: if True, re-download the file even if it's already cached in the cache dir.
-        user_agent: Optional string or dict that will be appended to the user-agent on remote requests.
-
-    Return:
-        Local path (string) of file or if networking is off, last version of file cached on disk.
-
-    Raises:
-        In case of non-recoverable file (non-existent or inaccessible url + no cache on disk).
-    """
-    if is_url(url_or_filename):
-        if cache_dir is None:
-            raise NotADirectoryError(
-                "when download from url<%s>, cache_dir is required, but receive None",
-                url_or_filename)
-
-        if force_download:
-            # remove the target file under cache_dir
-            file_path = osp.join(cache_dir, osp.split(url_or_filename)[-1])
-            shutil.rmtree(file_path, ignore_errors=True)
-
-        # URL, so get it from the cache (downloading if necessary)
-        output_path = get_path_from_url(
-            url_or_filename,
-            root_dir=cache_dir,
-        )
-    elif os.path.exists(url_or_filename):
-        # File, and it exists.
-        output_path = url_or_filename
-    else:
-        raise FileNotFoundError(
-            "can't find the file<{%s}> which should be valid url or local file path",
-            url_or_filename)
-
-    return output_path
-
-
-def attribute_map(config: PretrainedConfig,
-                  kwargs: Dict[str, Any]) -> Dict[str, Any]:
+def attribute_map(config: PretrainedConfig, kwargs: Dict[str, Any]) -> Dict[str, Any]:
     """map the <old-attr> to <new-attr> with configuration
 
     Args:
@@ -166,11 +125,33 @@ def attribute_map(config: PretrainedConfig,
     for old_key, new_key in config.attribute_map.items():
         if old_key in kwargs:
             if new_key in kwargs:
-                logger.warning(
-                    f'receive param<{old_key}> and param<{new_key}>, but the first one will be adopt'
-                )
+                logger.warning(f"receive param<{old_key}> and param<{new_key}>, but the first one will be adopt")
             kwargs[new_key] = kwargs.pop(old_key)
     return kwargs
+
+
+def convert_to_legacy_config(attribute_map: Dict[str, str], config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    works when there are different fields between huggingface and paddle
+    Args:
+        attribute_map (Dict[str, str]): mapping of between standard config and paddle config
+        config (Dict[str, Any]): config of huggingface transformers models
+    Returns: the config which can be mapped into config of paddle model
+    """
+    if "init_args" in config:
+        args = []
+        for init_arg in config["init_args"]:
+            init_arg = convert_to_legacy_config(attribute_map, init_arg)
+            args.append(init_arg)
+        config["init_args"] = args
+
+    # TODO(wj-Mcat): to improve compatibility for: old local config and new PretrainedConfig, eg:
+    # { "init_args": [], "init_class": "", "num_classes": 12 }
+    for standard_field, paddle_field in attribute_map.items():
+        value = config.pop(standard_field, None) or config.pop(paddle_field, None)
+        if value is not None:
+            config[paddle_field] = value
+    return config
 
 
 def flatten_model_config(config: dict) -> dict:
@@ -183,7 +164,7 @@ def flatten_model_config(config: dict) -> dict:
         dict: the flatten config
     """
     # 1. extract the init_args into the top level
-    init_args = config.pop('init_args', [])
+    init_args = config.pop("init_args", [])
 
     index = 0
     while index < len(init_args):
@@ -196,13 +177,51 @@ def flatten_model_config(config: dict) -> dict:
             index += 1
 
     if init_args:
-        config['init_args'] = init_args
+        config["init_args"] = init_args
 
     # 2. convert `init_class` into `architectures`
-    if 'init_class' in config:
-        config['architectures'] = [config.pop('init_class')]
+    if "init_class" in config:
+        config["architectures"] = [config.pop("init_class")]
 
     return config
+
+
+def is_standard_config(config: Union[PretrainedConfig, Dict[str, Any]]) -> bool:
+    """
+    check whether the config is standard
+    Args:
+        config: the dict data of config
+    """
+    if isinstance(config, PretrainedConfig):
+        return True
+
+    return "init_class" not in config and "architectures" in config
+
+
+def resolve_hf_config_path(repo_id: str, cache_dir: str, subfolder=None) -> str:
+    """resolve config file from hf hub
+
+    Args:
+        repo_id (str): the repo name from huggingface hub
+        cache_dir (str): the cachedir
+        subfolder (str, optional) An optional value corresponding to a folder inside the repo.
+
+    Returns:
+        str: the downloaded config file
+    """
+    if hf_file_exists(repo_id=repo_id, filename=CONFIG_NAME, subfolder=subfolder):
+        file_name = CONFIG_NAME
+    else:
+        raise EntryNotFoundError(f"can not find the paddle/pytorch config file from: https://huggingface.co/{repo_id}")
+
+    return hf_hub_download(
+        repo_id=repo_id,
+        filename=file_name,
+        cache_dir=cache_dir,
+        subfolder=subfolder,
+        library_name="PaddleNLP",
+        library_version=__version__,
+    )
 
 
 class PretrainedConfig:
@@ -403,6 +422,7 @@ class PretrainedConfig:
 
     # global attribute mapping
     attribute_map: Dict[str, str] = {"num_classes": "num_labels"}
+
     _auto_class: Optional[str] = None
 
     def __setattr__(self, key, value):
@@ -412,8 +432,7 @@ class PretrainedConfig:
         assert hasattr(self, key)
 
     def __getattribute__(self, key):
-        if key != "attribute_map" and key in super().__getattribute__(
-                "attribute_map"):
+        if key != "attribute_map" and key in super().__getattribute__("attribute_map"):
             key = super().__getattribute__("attribute_map")[key]
         return super().__getattribute__(key)
 
@@ -433,17 +452,35 @@ class PretrainedConfig:
         self.output_hidden_states = kwargs.pop("output_hidden_states", False)
         self.output_attentions = kwargs.pop("output_attentions", False)
         self.use_cache = kwargs.pop("use_cache", False)
+        if "quantization_config" in kwargs and isinstance(kwargs["quantization_config"], Dict):
+            kwargs["quantization_config"] = QuantizationConfig.from_dict(kwargs["quantization_config"])
+        self.quantization_config = kwargs.pop("quantization_config", QuantizationConfig())
+        self.use_flash_attention = kwargs.pop("use_flash_attention", False)
 
         self.pruned_heads = kwargs.pop("pruned_heads", {})
         self.tie_word_embeddings = kwargs.pop(
             "tie_word_embeddings", True
         )  # Whether input and output word embeddings should be tied for all MLM, LM and Seq2Seq models.
 
+        # parameter for model dtype
+        if "torch_dtype" in kwargs:
+            self.dtype = kwargs.pop("torch_dtype")
+        else:
+            self.dtype = kwargs.pop("dtype", paddle.get_default_dtype())
+
+        # Parameters for tensor parallel
+        self.tensor_parallel_degree = kwargs.pop("tensor_parallel_degree", -1)
+        self.tensor_parallel_rank = kwargs.pop("tensor_parallel_rank", 0)
+        # If set to True, this option is used with fleet.meta_parallel.ParallelCrossEntropy
+        # to calculate cross-entropy loss for parallel model.
+        self.tensor_parallel_output = kwargs.pop("tensor_parallel_output", False)
+        # Temporary switch to control hook vs. PyLayer implementation of recompute
+        self.recompute_use_reentrant = kwargs.pop("recompute_use_reentrant", False)
+
         # Is decoder is used in encoder-decoder models to differentiate encoder from decoder
         self.is_encoder_decoder = kwargs.pop("is_encoder_decoder", False)
         self.is_decoder = kwargs.pop("is_decoder", False)
-        self.cross_attention_hidden_size = kwargs.pop(
-            "cross_attention_hidden_size", None)
+        self.cross_attention_hidden_size = kwargs.pop("cross_attention_hidden_size", None)
         self.add_cross_attention = kwargs.pop("add_cross_attention", False)
         self.tie_encoder_decoder = kwargs.pop("tie_encoder_decoder", False)
 
@@ -462,19 +499,16 @@ class PretrainedConfig:
         self.repetition_penalty = kwargs.pop("repetition_penalty", 1.0)
         self.length_penalty = kwargs.pop("length_penalty", 1.0)
         self.no_repeat_ngram_size = kwargs.pop("no_repeat_ngram_size", 0)
-        self.encoder_no_repeat_ngram_size = kwargs.pop(
-            "encoder_no_repeat_ngram_size", 0)
+        self.encoder_no_repeat_ngram_size = kwargs.pop("encoder_no_repeat_ngram_size", 0)
         self.bad_words_ids = kwargs.pop("bad_words_ids", None)
         self.num_return_sequences = kwargs.pop("num_return_sequences", 1)
         self.chunk_size_feed_forward = kwargs.pop("chunk_size_feed_forward", 0)
         self.output_scores = kwargs.pop("output_scores", False)
-        self.return_dict_in_generate = kwargs.pop("return_dict_in_generate",
-                                                  False)
+        self.return_dict_in_generate = kwargs.pop("return_dict_in_generate", False)
         self.forced_bos_token_id = kwargs.pop("forced_bos_token_id", None)
         self.forced_eos_token_id = kwargs.pop("forced_eos_token_id", None)
         self.remove_invalid_values = kwargs.pop("remove_invalid_values", False)
-        self.exponential_decay_length_penalty = kwargs.pop(
-            "exponential_decay_length_penalty", None)
+        self.exponential_decay_length_penalty = kwargs.pop("exponential_decay_length_penalty", None)
 
         # Fine-tuning task arguments
         self.architectures = kwargs.pop("architectures", None)
@@ -488,11 +522,11 @@ class PretrainedConfig:
                     f"You passed along `num_labels={num_labels}` with an incompatible id to label map: "
                     f"{self.id2label}. The number of labels wil be overwritten to {self.num_labels}."
                 )
-            self.id2label = dict(
-                (int(key), value) for key, value in self.id2label.items())
+            self.id2label = dict((int(key), value) for key, value in self.id2label.items())
             # Keys are always strings in JSON so convert ids to int here.
         else:
             self.num_labels = kwargs.pop("num_labels", 2)
+        self.num_choices = kwargs.pop("num_choices", None)
 
         self.classifier_dropout = kwargs.pop("classifier_dropout", None)
 
@@ -504,8 +538,6 @@ class PretrainedConfig:
         self.eos_token_id = kwargs.pop("eos_token_id", None)
         self.sep_token_id = kwargs.pop("sep_token_id", None)
 
-        self.dtype = kwargs.pop("dtype", None)
-
         self.decoder_start_token_id = kwargs.pop("decoder_start_token_id", None)
 
         # task specific arguments
@@ -513,8 +545,7 @@ class PretrainedConfig:
 
         # regression / multi-label classification
         self.problem_type = kwargs.pop("problem_type", None)
-        allowed_problem_types = ("regression", "single_label_classification",
-                                 "multi_label_classification")
+        allowed_problem_types = ("regression", "single_label_classification", "multi_label_classification")
         if self.problem_type is not None and self.problem_type not in allowed_problem_types:
             raise ValueError(
                 f"The config parameter `problem_type` was not understood: received {self.problem_type} "
@@ -549,9 +580,7 @@ class PretrainedConfig:
 
     @name_or_path.setter
     def name_or_path(self, value):
-        self._name_or_path = str(
-            value
-        )  # Make sure that name_or_path is a string (for JSON encoding)
+        self._name_or_path = str(value)  # Make sure that name_or_path is a string (for JSON encoding)
 
     @property
     def use_return_dict(self) -> bool:
@@ -569,14 +598,11 @@ class PretrainedConfig:
 
     @num_labels.setter
     def num_labels(self, num_labels: int):
-        if not hasattr(self, "id2label") or self.id2label is None or len(
-                self.id2label) != num_labels:
+        if not hasattr(self, "id2label") or self.id2label is None or len(self.id2label) != num_labels:
             self.id2label = {i: f"LABEL_{i}" for i in range(num_labels)}
-            self.label2id = dict(
-                zip(self.id2label.values(), self.id2label.keys()))
+            self.label2id = dict(zip(self.id2label.values(), self.id2label.keys()))
 
-    def save_pretrained(self, save_directory: Union[str, os.PathLike],
-                        **kwargs):
+    def save_pretrained(self, save_directory: Union[str, os.PathLike], **kwargs):
         """
         Save a configuration object to the directory `save_directory`, so that it can be re-loaded using the
         [`~PretrainedConfig.from_pretrained`] class method.
@@ -588,9 +614,7 @@ class PretrainedConfig:
                 Additional key word arguments passed along to the [`~utils.PushToHubMixin.push_to_hub`] method.
         """
         if os.path.isfile(save_directory):
-            raise AssertionError(
-                f"Provided path ({save_directory}) should be a directory, not a file"
-            )
+            raise AssertionError(f"Provided path ({save_directory}) should be a directory, not a file")
 
         os.makedirs(save_directory, exist_ok=True)
 
@@ -606,9 +630,7 @@ class PretrainedConfig:
         logger.info(f"Configuration saved in {output_config_file}")
 
     @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path: Union[str,
-                                                                  os.PathLike],
-                        **kwargs) -> PretrainedConfig:
+    def from_pretrained(cls, pretrained_model_name_or_path: Union[str, os.PathLike], **kwargs) -> PretrainedConfig:
         r"""
         Instantiate a [`PretrainedConfig`] (or a derived class) from a pretrained model configuration.
 
@@ -622,18 +644,6 @@ class PretrainedConfig:
                 - a path to a *directory* containing a configuration file saved using the
                   [`~PretrainedConfig.save_pretrained`] method, e.g., `./my_model_directory/`.
                 - a path or url to a saved configuration JSON *file*, e.g., `./my_model_directory/configuration.json`.
-            cache_dir (`str` or `os.PathLike`, *optional*):
-                Path to a directory in which a downloaded pretrained model configuration should be cached if the
-                standard cache should not be used.
-            force_download (`bool`, *optional*, defaults to `False`):
-                Whether or not to force to (re-)download the configuration files and override the cached versions if
-                they exist.
-            return_unused_kwargs (`bool`, *optional*, defaults to `False`):
-                If `False`, then this function returns just the final configuration object.
-
-                If `True`, then this functions returns a `Tuple(config, unused_kwargs)` where *unused_kwargs* is a
-                dictionary consisting of the key/value pairs whose keys are not configuration attributes: i.e., the
-                part of `kwargs` which has not been used to update `config` and is otherwise ignored.
             kwargs (`Dict[str, Any]`, *optional*):
                 The values in kwargs of any keys which are configuration attributes will be used to override the loaded
                 values. Behavior concerning key/value pairs whose keys are *not* configuration attributes is controlled
@@ -668,23 +678,14 @@ class PretrainedConfig:
         assert config.output_attentions == True
         assert unused_kwargs == {"foo": False}
         ```"""
-        config_dict, kwargs = cls.get_config_dict(pretrained_model_name_or_path,
-                                                  **kwargs)
-        config_dict = flatten_model_config(config_dict)
-        if "model_type" in config_dict and hasattr(
-                cls,
-                "model_type") and config_dict["model_type"] != cls.model_type:
-            logger.warning(
-                f"You are using a model of type {config_dict['model_type']} to instantiate a model of type "
-                f"{cls.model_type}. This is not supported for all configurations of models and can yield errors."
-            )
+        config_dict, kwargs = cls.get_config_dict(pretrained_model_name_or_path, **kwargs)
 
         return cls.from_dict(config_dict, **kwargs)
 
     @classmethod
-    def get_config_dict(cls, pretrained_model_name_or_path: Union[str,
-                                                                  os.PathLike],
-                        **kwargs) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    def get_config_dict(
+        cls, pretrained_model_name_or_path: Union[str, os.PathLike], **kwargs
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
         From a `pretrained_model_name_or_path`, resolve to a dictionary of parameters, to be used for instantiating a
         [`PretrainedConfig`] using `from_dict`.
@@ -698,39 +699,40 @@ class PretrainedConfig:
 
         """
         original_kwargs = copy.deepcopy(kwargs)
+        cache_dir = kwargs.pop("cache_dir", None)
+        from_hf_hub = kwargs.get("from_hf_hub", False)
+        cache_dir = resolve_cache_dir(pretrained_model_name_or_path, from_hf_hub, cache_dir)
+
         # Get config dict associated with the base config file
-        config_dict, kwargs = cls._get_config_dict(
-            pretrained_model_name_or_path, **kwargs)
+        config_dict, kwargs = cls._get_config_dict(pretrained_model_name_or_path, cache_dir=cache_dir, **kwargs)
 
         # That config file may point us toward another config file to use.
         if "configuration_files" in config_dict:
-            configuration_file = get_configuration_file(
-                config_dict["configuration_files"])
+            original_kwargs["cache_dir"] = cache_dir
+            configuration_file = get_configuration_file(config_dict["configuration_files"])
             config_dict, kwargs = cls._get_config_dict(
-                pretrained_model_name_or_path,
-                _configuration_file=configuration_file,
-                **original_kwargs)
+                pretrained_model_name_or_path, _configuration_file=configuration_file, **original_kwargs
+            )
 
         return config_dict, kwargs
 
     @classmethod
-    def _get_config_dict(cls, pretrained_model_name_or_path: Union[str,
-                                                                   os.PathLike],
-                         **kwargs) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    def _get_config_dict(
+        cls, pretrained_model_name_or_path: Union[str, os.PathLike], **kwargs
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         cache_dir = kwargs.pop("cache_dir", None)
-        cache_dir = resolve_cache_dir(pretrained_model_name_or_path,
-                                      cache_dir=cache_dir)
-
+        from_hf_hub = kwargs.pop("from_hf_hub", False)
+        from_aistudio = kwargs.pop("from_aistudio", False)
+        subfolder = kwargs.pop("subfolder", None)
         force_download = kwargs.pop("force_download", False)
         pretrained_model_name_or_path = str(pretrained_model_name_or_path)
 
         resolved_config_file = None
 
-        # init from pretrained_init_configuration
+        # 0. init from pretrained_init_configuration
         if pretrained_model_name_or_path in cls.pretrained_init_configuration:
             # which can be: dict or url
-            pretrained_model_name_or_path = cls.pretrained_init_configuration[
-                pretrained_model_name_or_path]
+            pretrained_model_name_or_path = cls.pretrained_init_configuration[pretrained_model_name_or_path]
 
             if isinstance(pretrained_model_name_or_path, dict):
                 return pretrained_model_name_or_path, kwargs
@@ -739,47 +741,57 @@ class PretrainedConfig:
         if os.path.isfile(pretrained_model_name_or_path):
             resolved_config_file = pretrained_model_name_or_path
 
-        # 2. get the configuration file from url, eg: https://ip/path/to/model_config.jsons
+        # 2. get the configuration file from url, eg: https://ip/path/to/model_config.json
         elif is_url(pretrained_model_name_or_path):
-            resolved_config_file = get_path_from_url(
-                pretrained_model_name_or_path,
-                cache_dir,
-                check_exist=not force_download)
+            resolved_config_file = get_path_from_url_with_filelock(
+                pretrained_model_name_or_path, cache_dir, check_exist=not force_download
+            )
         # 3. get the configuration file from local dir with default name, eg: /local/path
         elif os.path.isdir(pretrained_model_name_or_path):
             configuration_file = kwargs.pop("_configuration_file", CONFIG_NAME)
-            configuration_file = os.path.join(pretrained_model_name_or_path,
-                                              configuration_file)
-            if os.path.isfile(configuration_file):
+            configuration_file = os.path.join(pretrained_model_name_or_path, configuration_file)
+            if os.path.exists(configuration_file):
                 resolved_config_file = configuration_file
             else:
-                raise FileNotFoundError(
-                    'please make sure there is `model_config.json` under the dir, or you can pass the `_configuration_file` '
-                    'param into `from_pretarined` method to specific the configuration file name'
-                )
-        # 4. load it as the community resource file
+                # try to detect old-school config file
+                configuration_file = os.path.join(pretrained_model_name_or_path, LEGACY_CONFIG_NAME)
+                if os.path.exists(configuration_file):
+                    resolved_config_file = configuration_file
+                else:
+                    raise FileNotFoundError(
+                        "please make sure there is `model_config.json` under the dir, or you can pass the `_configuration_file` "
+                        "param into `from_pretarined` method to specific the configuration file name"
+                    )  # 4. load it as the community resource file
+
+        # 4. get the configuration file from HF hub
+        elif from_hf_hub:
+            resolved_config_file = resolve_hf_config_path(
+                repo_id=pretrained_model_name_or_path, cache_dir=cache_dir, subfolder=subfolder
+            )
+        elif from_aistudio:
+            resolved_config_file = aistudio_download(repo_id=pretrained_model_name_or_path, filename=CONFIG_NAME)
         else:
-            community_url = os.path.join(COMMUNITY_MODEL_PREFIX,
-                                         pretrained_model_name_or_path,
-                                         CONFIG_NAME)
-            assert is_url(community_url)
-            return cls._get_config_dict(community_url,
-                                        cache_dir=cache_dir,
-                                        **kwargs)
+            community_url = "/".join([COMMUNITY_MODEL_PREFIX, pretrained_model_name_or_path, CONFIG_NAME])
+            if url_file_exists(community_url):
+                return cls._get_config_dict(community_url, cache_dir=cache_dir, **kwargs)
+
+            community_url = "/".join([COMMUNITY_MODEL_PREFIX, pretrained_model_name_or_path, LEGACY_CONFIG_NAME])
+            if url_file_exists(community_url):
+                return cls._get_config_dict(community_url, cache_dir=cache_dir, **kwargs)
+
+            raise FileNotFoundError(f"configuration file<{CONFIG_NAME}> or <{LEGACY_CONFIG_NAME}> not found")
+
         try:
-            logger.info(f"loading configuration file {resolved_config_file}")
+            logger.info(f"Loading configuration file {resolved_config_file}")
             # Load config dict
             config_dict = cls._dict_from_json_file(resolved_config_file)
         except (json.JSONDecodeError, UnicodeDecodeError):
-            raise EnvironmentError(
-                f"It looks like the config file<'{resolved_config_file}'> is not a valid JSON file."
-            )
+            raise EnvironmentError(f"Config file<'{resolved_config_file}'> is not a valid JSON file.")
 
         return config_dict, kwargs
 
     @classmethod
-    def from_dict(cls, config_dict: Dict[str, Any],
-                  **kwargs) -> "PretrainedConfig":
+    def from_dict(cls, config_dict: Dict[str, Any], **kwargs) -> "PretrainedConfig":
         """
         Instantiates a [`PretrainedConfig`] from a Python dictionary of parameters.
 
@@ -794,25 +806,33 @@ class PretrainedConfig:
             [`PretrainedConfig`]: The configuration object instantiated from those parameters.
         """
         return_unused_kwargs = kwargs.pop("return_unused_kwargs", False)
-        # Those arguments may be passed along for our internal telemetry.
-        # We remove them so they don't appear in `return_unused_kwargs`.
+
+        # do standard config map: there are some old-school pretrained-config not refactored.
+        config_dict = convert_to_legacy_config(cls.attribute_map, config_dict)
+
+        config_dict = flatten_model_config(config_dict)
+
+        if "model_type" in config_dict and hasattr(cls, "model_type") and config_dict["model_type"] != cls.model_type:
+            logger.warning(
+                f"You are using a model of type {config_dict['model_type']} to instantiate a model of type "
+                f"{cls.model_type}. This is not supported for all configurations of models and can yield errors."
+            )
 
         config = cls(**config_dict)
 
         if hasattr(config, "pruned_heads"):
-            config.pruned_heads = dict(
-                (int(key), value) for key, value in config.pruned_heads.items())
+            config.pruned_heads = dict((int(key), value) for key, value in config.pruned_heads.items())
 
         # Update config with kwargs if needed
         if "num_labels" in kwargs and "id2label" in kwargs:
             num_labels = kwargs["num_labels"]
-            id2label = kwargs["id2label"] if kwargs[
-                "id2label"] is not None else []
+            id2label = kwargs["id2label"] if kwargs["id2label"] is not None else []
             if len(id2label) != num_labels:
                 raise ValueError(
                     f"You passed along `num_labels={num_labels }` with an incompatible id to label map: "
                     f"{kwargs['id2label']}. Since those arguments are inconsistent with each other, you should remove "
-                    "one of them.")
+                    "one of them."
+                )
         to_remove = []
         for key, value in kwargs.items():
             if hasattr(config, key):
@@ -822,15 +842,13 @@ class PretrainedConfig:
         for key in to_remove:
             kwargs.pop(key, None)
 
-        logger.info(f"Model config {config}")
         if return_unused_kwargs:
             return config, kwargs
         else:
             return config
 
     @classmethod
-    def from_json_file(
-            cls, json_file: Union[str, os.PathLike]) -> "PretrainedConfig":
+    def from_json_file(cls, json_file: Union[str, os.PathLike]) -> "PretrainedConfig":
         """
         Instantiates a [`PretrainedConfig`] from the path to a JSON file of parameters.
 
@@ -871,16 +889,23 @@ class PretrainedConfig:
         default_config_dict = PretrainedConfig().to_dict()
 
         # get class specific config dict
-        class_config_dict = self.__class__().to_dict(
-        ) if not self.is_composition else {}
+        class_config_dict = self.__class__().to_dict() if not self.is_composition else {}
 
         serializable_config_dict = {}
 
         # only serialize values that differ from the default config
         for key, value in config_dict.items():
-            if (key not in default_config_dict or key == "paddlenlp_version"
-                    or value != default_config_dict[key] or
-                (key in class_config_dict and value != class_config_dict[key])):
+            if key == "quantization_config":
+                quantization_diff_dict = self.quantization_config.to_diff_dict()
+                if len(quantization_diff_dict) > 0:
+                    serializable_config_dict[key] = quantization_diff_dict
+                continue
+            if (
+                key not in default_config_dict
+                or key == "paddlenlp_version"
+                or value != default_config_dict[key]
+                or (key in class_config_dict and value != class_config_dict[key])
+            ):
                 serializable_config_dict[key] = value
 
         return serializable_config_dict
@@ -897,6 +922,8 @@ class PretrainedConfig:
             output["model_type"] = self.__class__.model_type
         if "_auto_class" in output:
             del output["_auto_class"]
+
+        output["quantization_config"] = self.quantization_config.to_dict()
 
         return output
 
@@ -916,11 +943,9 @@ class PretrainedConfig:
             config_dict = self.to_diff_dict()
         else:
             config_dict = self.to_dict()
-        return json.dumps(config_dict, indent=2, sort_keys=True) + "\n"
+        return json.dumps(config_dict, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
-    def to_json_file(self,
-                     json_file_path: Union[str, os.PathLike],
-                     use_diff: bool = True):
+    def to_json_file(self, json_file_path: Union[str, os.PathLike], use_diff: bool = True):
         """
         Save this instance to a JSON file.
 
@@ -970,8 +995,7 @@ class PretrainedConfig:
                 elif v.lower() in ["false", "0", "n", "no"]:
                     v = False
                 else:
-                    raise ValueError(
-                        f"can't derive true or false from {v} (key {k})")
+                    raise ValueError(f"can't derive true or false from {v} (key {k})")
             elif isinstance(old_v, int):
                 v = int(v)
             elif isinstance(old_v, float):
@@ -1009,6 +1033,18 @@ class PretrainedConfig:
 
         cls._auto_class = auto_class
 
+    def get(self, key, default=None):
+        """
+        Return the value for key if config class has the attribute , else default.
+        If default is not given, it defaults to None, so that this method never raises a AttributeError.
+        """
+        try:
+            value = self.__getattribute__(key)
+        except AttributeError:
+            return default
+        else:
+            return value
+
 
 def get_configuration_file(configuration_files: List[str]) -> str:
     """
@@ -1038,6 +1074,7 @@ def get_configuration_file(configuration_files: List[str]) -> str:
     # the version of package, also be uesed in `transfromer`.
     # **But**, we don't support version compare function now. so remove the hard dependency.
     from packaging import version
+
     paddlenlp_version = version.parse(__version__)
     for v in available_versions:
         if version.parse(v) <= paddlenlp_version:

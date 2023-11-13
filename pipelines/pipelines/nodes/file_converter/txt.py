@@ -13,17 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List, Optional, Any, Dict
-
 import logging
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 from pipelines.nodes.file_converter import BaseConverter
 
 logger = logging.getLogger(__name__)
 
 
 class TextConverter(BaseConverter):
-
     def convert(
         self,
         file_path: Path,
@@ -31,6 +30,7 @@ class TextConverter(BaseConverter):
         remove_numeric_tables: Optional[bool] = None,
         valid_languages: Optional[List[str]] = None,
         encoding: Optional[str] = "utf-8",
+        **kwargs: Any,
     ) -> List[Dict[str, Any]]:
         """
         Reads text from a txt file and executes optional preprocessing steps.
@@ -67,14 +67,11 @@ class TextConverter(BaseConverter):
             cleaned_lines = []
             for line in lines:
                 words = line.split()
-                digits = [
-                    word for word in words if any(i.isdigit() for i in word)
-                ]
+                digits = [word for word in words if any(i.isdigit() for i in word)]
 
                 # remove lines having > 40% of words as digits AND not ending with a period(.)
                 if remove_numeric_tables:
-                    if words and len(digits) / len(
-                            words) > 0.4 and not line.strip().endswith("."):
+                    if words and len(digits) / len(words) > 0.4 and not line.strip().endswith("."):
                         logger.debug(f"Removing line '{line}' from {file_path}")
                         continue
 
@@ -88,7 +85,8 @@ class TextConverter(BaseConverter):
             if not self.validate_language(document_text, valid_languages):
                 logger.warning(
                     f"The language for {file_path} is not one of {valid_languages}. The file may not have "
-                    f"been decoded in the correct text format.")
+                    f"been decoded in the correct text format."
+                )
         documents = []
         for page in cleaned_pages:
             document = {"content": page, "content_type": "text", "meta": meta}

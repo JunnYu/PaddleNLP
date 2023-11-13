@@ -16,13 +16,14 @@
 
 import copy
 import math
+
 import paddle
 import paddle.nn as nn
 import paddle.nn.functional as F
 
 from .. import PretrainedModel, register_base_model
-
-from ..nezha.modeling import ACT2FN
+from ..activations import ACT2FN
+from .configuration import MPNET_PRETRAINED_INIT_CONFIGURATION, MPNetConfig
 
 __all__ = [
     "MPNetModel",
@@ -50,31 +51,20 @@ class MPNetEmbeddings(nn.Layer):
     Include embeddings from word and position embeddings.
     """
 
-    def __init__(
-        self,
-        vocab_size,
-        hidden_size=768,
-        hidden_dropout_prob=0.1,
-        max_position_embeddings=514,
-        layer_norm_eps=1e-5,
-        pad_token_id=1,
-    ):
+    def __init__(self, config: MPNetConfig):
         super(MPNetEmbeddings, self).__init__()
-        self.padding_idx = pad_token_id
-        self.word_embeddings = nn.Embedding(vocab_size,
-                                            hidden_size,
-                                            padding_idx=self.padding_idx)
-        self.position_embeddings = nn.Embedding(max_position_embeddings,
-                                                hidden_size,
-                                                padding_idx=self.padding_idx)
-        self.layer_norm = nn.LayerNorm(hidden_size, epsilon=layer_norm_eps)
-        self.dropout = nn.Dropout(hidden_dropout_prob)
+        self.padding_idx = config.pad_token_id
+        self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=self.padding_idx)
+        self.position_embeddings = nn.Embedding(
+            config.max_position_embeddings, config.hidden_size, padding_idx=self.padding_idx
+        )
+        self.layer_norm = nn.LayerNorm(config.hidden_size, epsilon=config.layer_norm_eps)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, input_ids, position_ids=None):
 
         if position_ids is None:
-            position_ids = create_position_ids_from_input_ids(
-                input_ids, self.padding_idx)
+            position_ids = create_position_ids_from_input_ids(input_ids, self.padding_idx)
 
         words_embeddings = self.word_embeddings(input_ids)
         position_embeddings = self.position_embeddings(position_ids)
@@ -87,32 +77,25 @@ class MPNetEmbeddings(nn.Layer):
 
 
 class MPNetAttention(nn.Layer):
-
-    def __init__(
-        self,
-        hidden_size=768,
-        num_attention_heads=12,
-        hidden_dropout_prob=0.1,
-        attention_probs_dropout_prob=0.1,
-        layer_norm_eps=1e-5,
-    ):
+    def __init__(self, config: MPNetConfig):
         super(MPNetAttention, self).__init__()
-        if hidden_size % num_attention_heads != 0:
+        if config.hidden_size % config.num_attention_heads != 0:
             raise ValueError(
                 "The hidden size (%d) is not a multiple of the number of attention "
-                "heads (%d)" % (hidden_size, num_attention_heads))
-        self.num_attention_heads = num_attention_heads
-        self.attention_head_size = hidden_size // num_attention_heads
+                "heads (%d)" % (config.hidden_size, config.num_attention_heads)
+            )
+        self.num_attention_heads = config.num_attention_heads
+        self.attention_head_size = config.hidden_size // config.num_attention_heads
         self.all_head_size = self.num_attention_heads * self.attention_head_size
         self.scale = self.attention_head_size**-0.5
-        self.q = nn.Linear(hidden_size, self.all_head_size)
-        self.k = nn.Linear(hidden_size, self.all_head_size)
-        self.v = nn.Linear(hidden_size, self.all_head_size)
-        self.o = nn.Linear(hidden_size, hidden_size)
+        self.q = nn.Linear(config.hidden_size, self.all_head_size)
+        self.k = nn.Linear(config.hidden_size, self.all_head_size)
+        self.v = nn.Linear(config.hidden_size, self.all_head_size)
+        self.o = nn.Linear(config.hidden_size, config.hidden_size)
 
-        self.attention_dropout = nn.Dropout(attention_probs_dropout_prob)
-        self.layer_norm = nn.LayerNorm(hidden_size, epsilon=layer_norm_eps)
-        self.output_dropout = nn.Dropout(hidden_dropout_prob)
+        self.attention_dropout = nn.Dropout(config.attention_probs_dropout_prob)
+        self.layer_norm = nn.LayerNorm(config.hidden_size, epsilon=config.layer_norm_eps)
+        self.output_dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def transpose_for_scores(self, x):
         new_x_shape = x.shape[:-1] + [
@@ -146,51 +129,30 @@ class MPNetAttention(nn.Layer):
         context_layer = paddle.matmul(attention_probs, v)
 
         context_layer = context_layer.transpose(perm=(0, 2, 1, 3))
-        new_context_layer_shape = context_layer.shape[:-2] + [
-            self.all_head_size
-        ]
+        new_context_layer_shape = context_layer.shape[:-2] + [self.all_head_size]
         context_layer = context_layer.reshape(new_context_layer_shape)
 
         projected_context_layer = self.o(context_layer)
-        projected_context_layer_dropout = self.output_dropout(
-            projected_context_layer)
-        layer_normed_context_layer = self.layer_norm(
-            hidden_states + projected_context_layer_dropout)
+        projected_context_layer_dropout = self.output_dropout(projected_context_layer)
+        layer_normed_context_layer = self.layer_norm(hidden_states + projected_context_layer_dropout)
 
         return layer_normed_context_layer, attention_scores
 
 
 class MPNetLayer(nn.Layer):
-
-    def __init__(
-        self,
-        hidden_size,
-        num_attention_heads,
-        intermediate_size,
-        hidden_act,
-        hidden_dropout_prob,
-        attention_probs_dropout_prob,
-        layer_norm_eps,
-    ):
+    def __init__(self, config: MPNetConfig):
         super(MPNetLayer, self).__init__()
-        self.attention = MPNetAttention(
-            hidden_size,
-            num_attention_heads,
-            hidden_dropout_prob,
-            attention_probs_dropout_prob,
-            layer_norm_eps,
-        )
-        self.ffn = nn.Linear(hidden_size, intermediate_size)
-        self.ffn_output = nn.Linear(intermediate_size, hidden_size)
-        self.activation = ACT2FN[hidden_act]
-        self.layer_norm = nn.LayerNorm(hidden_size, epsilon=layer_norm_eps)
-        self.dropout = nn.Dropout(hidden_dropout_prob)
+        self.attention = MPNetAttention(config)
+        self.ffn = nn.Linear(config.hidden_size, config.intermediate_size)
+        self.ffn_output = nn.Linear(config.intermediate_size, config.hidden_size)
+        self.activation = ACT2FN[config.hidden_act]
+        self.layer_norm = nn.LayerNorm(config.hidden_size, epsilon=config.layer_norm_eps)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, hidden_states, attention_mask=None, position_bias=None):
         attention_output, layer_att = self.attention(
-            hidden_states,
-            attention_mask=attention_mask,
-            position_bias=position_bias)
+            hidden_states, attention_mask=attention_mask, position_bias=position_bias
+        )
 
         ffn_output = self.ffn(attention_output)
         ffn_output = self.activation(ffn_output)
@@ -203,33 +165,11 @@ class MPNetLayer(nn.Layer):
 
 
 class MPNetEncoder(nn.Layer):
-
-    def __init__(
-        self,
-        hidden_size,
-        num_hidden_layers,
-        num_attention_heads,
-        intermediate_size,
-        hidden_act,
-        hidden_dropout_prob,
-        attention_probs_dropout_prob,
-        relative_attention_num_buckets,
-        layer_norm_eps,
-    ):
+    def __init__(self, config: MPNetConfig):
         super(MPNetEncoder, self).__init__()
-        layer = MPNetLayer(
-            hidden_size,
-            num_attention_heads,
-            intermediate_size,
-            hidden_act,
-            hidden_dropout_prob,
-            attention_probs_dropout_prob,
-            layer_norm_eps,
-        )
-        self.layer = nn.LayerList(
-            [copy.deepcopy(layer) for _ in range(num_hidden_layers)])
-        self.relative_attention_bias = nn.Embedding(
-            relative_attention_num_buckets, num_attention_heads)
+        layer = MPNetLayer(config)
+        self.layer = nn.LayerList([copy.deepcopy(layer) for _ in range(config.num_hidden_layers)])
+        self.relative_attention_bias = nn.Embedding(config.relative_attention_num_buckets, config.num_attention_heads)
 
     def forward(self, hidden_states, attention_mask=None):
         position_bias = self.compute_position_bias(hidden_states)
@@ -237,9 +177,7 @@ class MPNetEncoder(nn.Layer):
         all_encoder_att = []
         for i, layer_module in enumerate(self.layer):
             all_encoder_layers.append(hidden_states)
-            hidden_states, layer_att = layer_module(all_encoder_layers[i],
-                                                    attention_mask,
-                                                    position_bias)
+            hidden_states, layer_att = layer_module(all_encoder_layers[i], attention_mask, position_bias)
             all_encoder_att.append(layer_att)
         all_encoder_layers.append(hidden_states)
         return all_encoder_layers, all_encoder_att
@@ -255,8 +193,7 @@ class MPNetEncoder(nn.Layer):
 
         relative_position = memory_position - context_position
 
-        rp_bucket = self.relative_position_bucket(relative_position,
-                                                  num_buckets=num_buckets)
+        rp_bucket = self.relative_position_bucket(relative_position, num_buckets=num_buckets)
 
         values = self.relative_attention_bias(rp_bucket)
         values = values.transpose(perm=[2, 0, 1]).unsqueeze(0)
@@ -264,9 +201,7 @@ class MPNetEncoder(nn.Layer):
         return values
 
     @staticmethod
-    def relative_position_bucket(relative_position,
-                                 num_buckets=32,
-                                 max_distance=128):
+    def relative_position_bucket(relative_position, num_buckets=32, max_distance=128):
         ret = 0
         n = -relative_position
 
@@ -278,12 +213,12 @@ class MPNetEncoder(nn.Layer):
         is_small = n < max_exact
 
         val_if_large = max_exact + (
-            paddle.log(n.astype(paddle.float32) / max_exact) /
-            math.log(max_distance / max_exact) *
-            (num_buckets - max_exact)).astype(paddle.int64)
+            paddle.log(n.astype(paddle.float32) / max_exact)
+            / math.log(max_distance / max_exact)
+            * (num_buckets - max_exact)
+        ).astype(paddle.int64)
 
-        val_if_large = paddle.minimum(
-            val_if_large, paddle.full_like(val_if_large, num_buckets - 1))
+        val_if_large = paddle.minimum(val_if_large, paddle.full_like(val_if_large, num_buckets - 1))
         ret += paddle.where(is_small, n, val_if_large)
         return ret
 
@@ -293,9 +228,9 @@ class MPNetPooler(nn.Layer):
     Pool the result of MPNetEncoder.
     """
 
-    def __init__(self, hidden_size):
+    def __init__(self, config: MPNetConfig):
         super(MPNetPooler, self).__init__()
-        self.dense = nn.Linear(hidden_size, hidden_size)
+        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.activation = nn.Tanh()
 
     def forward(self, hidden_states):
@@ -316,32 +251,16 @@ class MPNetPretrainedModel(PretrainedModel):
     See :class:`~paddlenlp.transformers.model_utils.PretrainedModel` for more details.
     """
 
-    pretrained_init_configuration = {
-        "mpnet-base": {
-            "vocab_size": 30527,
-            "hidden_size": 768,
-            "num_hidden_layers": 12,
-            "num_attention_heads": 12,
-            "intermediate_size": 3072,
-            "hidden_act": "gelu",
-            "hidden_dropout_prob": 0.1,
-            "attention_probs_dropout_prob": 0.1,
-            "max_position_embeddings": 514,
-            "relative_attention_num_buckets": 32,
-            "layer_norm_eps": 1e-05,
-            "initializer_range": 0.02,
-            "pad_token_id": 1,
-        }
-    }
+    base_model_prefix = "mpnet"
     pretrained_resource_files_map = {
         "model_state": {
-            "mpnet-base":
-            "https://bj.bcebos.com/paddlenlp/models/transformers/mpnet/mpnet-base/model_state.pdparams",
+            "mpnet-base": "https://bj.bcebos.com/paddlenlp/models/transformers/mpnet/mpnet-base/model_state.pdparams",
         }
     }
-    base_model_prefix = "mpnet"
+    pretrained_init_configuration = MPNET_PRETRAINED_INIT_CONFIGURATION
+    config_class = MPNetConfig
 
-    def init_weights(self, layer):
+    def _init_weights(self, layer):
         """Initialization hook"""
         if isinstance(layer, (nn.Linear, nn.Embedding)):
             # In the dygraph mode, use the `set_value` to reset the parameter directly,
@@ -350,11 +269,10 @@ class MPNetPretrainedModel(PretrainedModel):
                 layer.weight.set_value(
                     paddle.tensor.normal(
                         mean=0.0,
-                        std=self.initializer_range if hasattr(
-                            self, "initializer_range") else
-                        self.mpnet.config["initializer_range"],
+                        std=self.config.initializer_range,
                         shape=layer.weight.shape,
-                    ))
+                    )
+                )
 
 
 @register_base_model
@@ -366,103 +284,23 @@ class MPNetModel(MPNetPretrainedModel):
     Refer to the superclass documentation for the generic methods.
 
     This model is also a Paddle `paddle.nn.Layer <https://www.paddlepaddle.org.cn/documentation
-    /docs/en/api/paddle/fluid/dygraph/layers/Layer_en.html>`__ subclass. Use it as a regular Paddle Layer
+    /docs/zh/api/paddle/nn/Layer_cn.html>`__ subclass. Use it as a regular Paddle Layer
     and refer to the Paddle documentation for all matter related to general usage and behavior.
 
     Args:
-        vocab_size (int):
-            Vocabulary size of `inputs_ids` in `MPNetModel`. Also is the vocab size of token embedding matrix.
-            Defines the number of different tokens that can be represented by the `inputs_ids` passed when calling `MPNetModel`.
-        hidden_size (int, optional):
-            Dimensionality of the embedding layer, encoder layer and pooler layer. Defaults to `768`.
-        num_hidden_layers (int, optional):
-            Number of hidden layers in the Transformer encoder. Defaults to `12`.
-        num_attention_heads (int, optional):
-            Number of attention heads for each attention layer in the Transformer encoder.
-            Defaults to `12`.
-        intermediate_size (int, optional):
-            Dimensionality of the feed-forward (ff) layer in the encoder. Input tensors
-            to ff layers are firstly projected from `hidden_size` to `intermediate_size`,
-            and then projected back to `hidden_size`. Typically `intermediate_size` is larger than `hidden_size`.
-            Defaults to `3072`.
-        hidden_act (str, optional):
-            The non-linear activation function in the feed-forward layer.
-            ``"gelu"``, ``"relu"`` and any other paddle supported activation functions
-            are supported. Defaults to `"gelu"`.
-        hidden_dropout_prob (float, optional):
-            The dropout probability for all fully connected layers in the embeddings and encoder.
-            Defaults to `0.1`.
-        attention_probs_dropout_prob (float, optional):
-            The dropout probability used in MultiHeadAttention in all encoder layers to drop some attention target.
-            Defaults to `0.1`.
-        max_position_embeddings (int, optional):
-            The maximum value of the dimensionality of position encoding, which dictates the maximum supported length of an input
-            sequence. Defaults to `514`.
-        initializer_range (float, optional):
-            The standard deviation of the normal initializer.
-            Defaults to 0.02.
-
-            .. note::
-                A normal_initializer initializes weight matrices as normal distributions.
-                See :meth:`MPNetPretrainedModel.init_weights()` for how weights are initialized in `MPNetModel`.
-
-        relative_attention_num_buckets (int, optional):
-            The number of buckets to use for each attention layer.
-            Defaults to `32`.
-
-        layer_norm_eps (float, optional):
-            The epsilon used by the layer normalization layers.
-            Defaults to `1e-5`.
-
-        pad_token_id (int, optional):
-            The index of padding token in the token vocabulary.
-            Defaults to `1`.
-
+        config (:class:`MPNetConfig`):
+            An instance of MPNetConfig used to construct MPNetModel.
     """
 
-    def __init__(
-        self,
-        vocab_size,
-        hidden_size=768,
-        num_hidden_layers=12,
-        num_attention_heads=12,
-        intermediate_size=3072,
-        hidden_act="gelu",
-        hidden_dropout_prob=0.1,
-        attention_probs_dropout_prob=0.1,
-        max_position_embeddings=514,
-        initializer_range=0.02,
-        relative_attention_num_buckets=32,
-        layer_norm_eps=1e-5,
-        pad_token_id=1,
-    ):
-        super(MPNetModel, self).__init__()
-        self.initializer_range = initializer_range
-        self.embeddings = MPNetEmbeddings(
-            vocab_size,
-            hidden_size,
-            hidden_dropout_prob,
-            max_position_embeddings,
-            layer_norm_eps,
-            pad_token_id,
-        )
-        self.encoder = MPNetEncoder(
-            hidden_size,
-            num_hidden_layers,
-            num_attention_heads,
-            intermediate_size,
-            hidden_act,
-            hidden_dropout_prob,
-            attention_probs_dropout_prob,
-            relative_attention_num_buckets,
-            layer_norm_eps,
-        )
-
-        self.pooler = MPNetPooler(hidden_size)
-        self.apply(self.init_weights)
+    def __init__(self, config: MPNetConfig):
+        super(MPNetModel, self).__init__(config)
+        self.initializer_range = config.initializer_range
+        self.embeddings = MPNetEmbeddings(config)
+        self.encoder = MPNetEncoder(config)
+        self.pooler = MPNetPooler(config)
 
     def forward(self, input_ids, position_ids=None, attention_mask=None):
-        r'''
+        r"""
         The MPNetModel forward method, overrides the `__call__()` special method.
 
         Args:
@@ -512,11 +350,10 @@ class MPNetModel(MPNetPretrainedModel):
                 inputs = tokenizer("Welcome to use PaddlePaddle and PaddleNLP!")
                 inputs = {k:paddle.to_tensor([v]) for (k, v) in inputs.items()}
                 outputs = model(**inputs)
-        '''
+        """
 
         if attention_mask is None:
-            attention_mask = (input_ids != self.embeddings.padding_idx).astype(
-                input_ids.dtype)
+            attention_mask = (input_ids != self.embeddings.padding_idx).astype(input_ids.dtype)
 
         if attention_mask.ndim == 2:
             attention_mask = attention_mask.unsqueeze(axis=[1, 2])
@@ -531,6 +368,12 @@ class MPNetModel(MPNetPretrainedModel):
 
         return sequence_output, pooled_output
 
+    def get_input_embeddings(self):
+        return self.embeddings.word_embeddings
+
+    def set_input_embeddings(self, value):
+        self.embeddings.word_embeddings = value
+
 
 class MPNetLMHead(nn.Layer):
     """
@@ -539,29 +382,31 @@ class MPNetLMHead(nn.Layer):
 
     def __init__(
         self,
-        hidden_size,
-        vocab_size,
-        hidden_act="gelu",
+        config: MPNetConfig,
         embedding_weights=None,
-        layer_norm_eps=1e-5,
     ):
         super(MPNetLMHead, self).__init__()
-        self.dense = nn.Linear(hidden_size, hidden_size)
-        self.activation = ACT2FN[hidden_act]
-        self.layer_norm = nn.LayerNorm(hidden_size, epsilon=layer_norm_eps)
+        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        self.activation = ACT2FN[config.hidden_act]
+        self.layer_norm = nn.LayerNorm(config.hidden_size, epsilon=config.layer_norm_eps)
 
-        self.decoder_weight = embedding_weights
+        self.decoder_weight = (
+            self.create_parameter(
+                shape=[config.vocab_size, config.hidden_size], dtype=self.dense.weight.dtype, is_bias=False
+            )
+            if embedding_weights is None
+            else embedding_weights
+        )
         self.decoder_bias = self.create_parameter(
-            shape=[vocab_size], dtype=self.decoder_weight.dtype, is_bias=True)
+            shape=[config.vocab_size], dtype=self.decoder_weight.dtype, is_bias=True
+        )
 
     def forward(self, hidden_states):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.activation(hidden_states)
         hidden_states = self.layer_norm(hidden_states)
 
-        hidden_states = (paddle.matmul(
-            hidden_states, self.decoder_weight, transpose_y=True) +
-                         self.decoder_bias)
+        hidden_states = paddle.matmul(hidden_states, self.decoder_weight, transpose_y=True) + self.decoder_bias
 
         return hidden_states
 
@@ -571,23 +416,15 @@ class MPNetForMaskedLM(MPNetPretrainedModel):
     MPNet Model with a `language modeling` head on top.
 
     Args:
-        MPNet (:class:`MPNetModel`):
-            An instance of :class:`MPNetModel`.
+        config (:class:`MPNetConfig`):
+            An instance of MPNetConfig used to construct MPNetModel.
 
     """
 
-    def __init__(self, mpnet):
-        super(MPNetForMaskedLM, self).__init__()
-        self.mpnet = mpnet
-        self.lm_head = MPNetLMHead(
-            self.mpnet.config["hidden_size"],
-            self.mpnet.config["vocab_size"],
-            self.mpnet.config["hidden_act"],
-            self.mpnet.embeddings.word_embeddings.weight,
-            self.mpnet.config["layer_norm_eps"],
-        )
-
-        self.apply(self.init_weights)
+    def __init__(self, config: MPNetConfig):
+        super(MPNetForMaskedLM, self).__init__(config)
+        self.mpnet = MPNetModel(config)
+        self.lm_head = MPNetLMHead(config, embedding_weights=self.mpnet.embeddings.word_embeddings.weight)
 
     def forward(
         self,
@@ -625,7 +462,8 @@ class MPNetForMaskedLM(MPNetPretrainedModel):
 
         """
         sequence_output, pooled_output = self.mpnet(
-            input_ids, position_ids=position_ids, attention_mask=attention_mask)
+            input_ids, position_ids=position_ids, attention_mask=attention_mask
+        )
         prediction_scores = self.lm_head(sequence_output)
 
         masked_lm_loss = None
@@ -633,9 +471,8 @@ class MPNetForMaskedLM(MPNetPretrainedModel):
         if labels is not None:
             loss_fct = nn.CrossEntropyLoss()
             masked_lm_loss = loss_fct(
-                prediction_scores.reshape(
-                    shape=(-1, self.mpnet.config["vocab_size"])),
-                labels.reshape(shape=(-1, )),
+                prediction_scores.reshape(shape=(-1, self.mpnet.config["vocab_size"])),
+                labels.reshape(shape=(-1,)),
             )
             return masked_lm_loss, prediction_scores, sequence_output
 
@@ -648,25 +485,18 @@ class MPNetForSequenceClassification(MPNetPretrainedModel):
     designed for sequence classification/regression tasks like GLUE tasks.
 
     Args:
-        mpnet (:class:`MPNetModel`):
-            An instance of MPNetModel.
-        num_classes (int, optional):
-            The number of classes. Defaults to `2`.
-        dropout (float, optional):
-            The dropout probability for output of MPNet.
-            If None, use the same value as `hidden_dropout_prob` of `MPNetModel`
-            instance `mpnet`. Defaults to None.
+        config (:class:`MPNetConfig`):
+            An instance of MPNetConfig used to construct MPNetModel.
     """
 
-    def __init__(self, mpnet, num_classes=2, dropout=None):
-        super(MPNetForSequenceClassification, self).__init__()
-        self.num_classes = num_classes
-        self.mpnet = mpnet
-        self.dropout = nn.Dropout(dropout if dropout is not None else self.
-                                  mpnet.config["hidden_dropout_prob"])
-        self.classifier = nn.Linear(self.mpnet.config["hidden_size"],
-                                    num_classes)
-        self.apply(self.init_weights)
+    def __init__(self, config: MPNetConfig):
+        super(MPNetForSequenceClassification, self).__init__(config)
+        self.num_labels = config.num_labels
+        self.mpnet = MPNetModel(config)
+        self.dropout = nn.Dropout(
+            config.classifier_dropout if config.classifier_dropout is not None else config.hidden_dropout_prob
+        )
+        self.classifier = nn.Linear(config.hidden_size, config.num_labels)
 
     def forward(self, input_ids, position_ids=None, attention_mask=None):
         r"""
@@ -700,9 +530,7 @@ class MPNetForSequenceClassification(MPNetPretrainedModel):
                 logits = outputs[0]
         """
 
-        _, pooled_output = self.mpnet(input_ids,
-                                      position_ids=position_ids,
-                                      attention_mask=attention_mask)
+        _, pooled_output = self.mpnet(input_ids, position_ids=position_ids, attention_mask=attention_mask)
         pooled_output = self.dropout(pooled_output)
 
         logits = self.classifier(pooled_output)
@@ -716,24 +544,20 @@ class MPNetForMultipleChoice(MPNetPretrainedModel):
     designed for multiple choice tasks like RocStories/SWAG tasks.
 
     Args:
-        mpnet (:class:`MPNetModel`):
-            An instance of MPNetModel.
+        config (:class:`MPNetConfig`):
+            An instance of MPNetConfig used to construct MPNetModel.
         num_choices (int, optional):
             The number of choices. Defaults to `2`.
-        dropout (float, optional):
-            The dropout probability for output of MPNet.
-            If None, use the same value as `hidden_dropout_prob` of `MPNetModel`
-            instance `mpnet`. Defaults to None.
     """
 
-    def __init__(self, mpnet, num_choices=2, dropout=None):
-        super(MPNetForMultipleChoice, self).__init__()
+    def __init__(self, config: MPNetConfig, num_choices=2):
+        super(MPNetForMultipleChoice, self).__init__(config)
         self.num_choices = num_choices
-        self.mpnet = mpnet
-        self.dropout = nn.Dropout(dropout if dropout is not None else self.
-                                  mpnet.config["hidden_dropout_prob"])
-        self.classifier = nn.Linear(self.mpnet.config["hidden_size"], 1)
-        self.apply(self.init_weights)
+        self.mpnet = MPNetModel(config)
+        self.dropout = nn.Dropout(
+            config.classifier_dropout if config.classifier_dropout is not None else config.hidden_dropout_prob
+        )
+        self.classifier = nn.Linear(config.hidden_size, 1)
 
     def forward(self, input_ids, position_ids=None, attention_mask=None):
         r"""
@@ -758,33 +582,27 @@ class MPNetForMultipleChoice(MPNetPretrainedModel):
 
                 tokenizer = MPNetTokenizer.from_pretrained('mpnet-base')
                 model = MPNetForMultipleChoice.from_pretrained('mpnet-base')
-                
+
                 inputs = tokenizer("Welcome to use PaddlePaddle and PaddleNLP!")
                 inputs = {k:paddle.to_tensor([v]) for (k, v) in inputs.items()}
-                
+
                 logits = model(**inputs)
 
         """
         # input_ids: [bs, num_choice, seq_l]
-        input_ids = input_ids.reshape(shape=(
-            -1, input_ids.shape[-1]))  # flat_input_ids: [bs*num_choice,seq_l]
+        input_ids = input_ids.reshape(shape=(-1, input_ids.shape[-1]))  # flat_input_ids: [bs*num_choice,seq_l]
 
         if position_ids is not None:
-            position_ids = position_ids.reshape(shape=(-1,
-                                                       position_ids.shape[-1]))
+            position_ids = position_ids.reshape(shape=(-1, position_ids.shape[-1]))
 
         if attention_mask is not None:
-            attention_mask = attention_mask.reshape(
-                shape=(-1, attention_mask.shape[-1]))
+            attention_mask = attention_mask.reshape(shape=(-1, attention_mask.shape[-1]))
 
-        _, pooled_output = self.mpnet(input_ids,
-                                      position_ids=position_ids,
-                                      attention_mask=attention_mask)
+        _, pooled_output = self.mpnet(input_ids, position_ids=position_ids, attention_mask=attention_mask)
         pooled_output = self.dropout(pooled_output)
 
         logits = self.classifier(pooled_output)  # logits: (bs*num_choice,1)
-        reshaped_logits = logits.reshape(
-            shape=(-1, self.num_choices))  # logits: (bs, num_choice)
+        reshaped_logits = logits.reshape(shape=(-1, self.num_choices))  # logits: (bs, num_choice)
 
         return reshaped_logits
 
@@ -795,25 +613,18 @@ class MPNetForTokenClassification(MPNetPretrainedModel):
     designed for token classification tasks like NER tasks.
 
     Args:
-        mpnet (:class:`MPNetModel`):
-            An instance of MPNetModel.
-        num_classes (int, optional):
-            The number of classes. Defaults to `2`.
-        dropout (float, optional):
-            The dropout probability for output of MPNet.
-            If None, use the same value as `hidden_dropout_prob` of `MPNetModel`
-            instance `mpnet`. Defaults to None.
+        config (:class:`MPNetConfig`):
+            An instance of MPNetConfig used to construct MPNetModel.
     """
 
-    def __init__(self, mpnet, num_classes=2, dropout=None):
-        super(MPNetForTokenClassification, self).__init__()
-        self.num_classes = num_classes
-        self.mpnet = mpnet
-        self.dropout = nn.Dropout(dropout if dropout is not None else self.
-                                  mpnet.config["hidden_dropout_prob"])
-        self.classifier = nn.Linear(self.mpnet.config["hidden_size"],
-                                    num_classes)
-        self.apply(self.init_weights)
+    def __init__(self, config: MPNetConfig):
+        super(MPNetForTokenClassification, self).__init__(config)
+        self.mpnet = MPNetModel(config)
+        self.num_labels = config.num_labels
+        self.dropout = nn.Dropout(
+            config.classifier_dropout if config.classifier_dropout is not None else config.hidden_dropout_prob
+        )
+        self.classifier = nn.Linear(config.hidden_size, config.num_labels)
 
     def forward(self, input_ids, position_ids=None, attention_mask=None):
         r"""
@@ -839,15 +650,13 @@ class MPNetForTokenClassification(MPNetPretrainedModel):
 
                 tokenizer = MPNetTokenizer.from_pretrained('mpnet-base')
                 model = MPNetForTokenClassification.from_pretrained('mpnet-base')
-                
+
                 inputs = tokenizer("Welcome to use PaddlePaddle and PaddleNLP!")
                 inputs = {k:paddle.to_tensor([v]) for (k, v) in inputs.items()}
-                
+
                 logits = model(**inputs)
         """
-        sequence_output, _ = self.mpnet(input_ids,
-                                        position_ids=position_ids,
-                                        attention_mask=attention_mask)
+        sequence_output, _ = self.mpnet(input_ids, position_ids=position_ids, attention_mask=attention_mask)
         sequence_output = self.dropout(sequence_output)
 
         logits = self.classifier(sequence_output)
@@ -861,20 +670,14 @@ class MPNetForQuestionAnswering(MPNetPretrainedModel):
     and `span_end_logits`, designed for question-answering tasks like SQuAD.
 
     Args:
-        mpnet (:class:`MPNetModel`):
-            An instance of MPNetModel.
-        num_classes (int, optional):
-            The number of classes. Defaults to `2`.
+        config (:class:`MPNetConfig`):
+            An instance of MPNetConfig used to construct MPNetModel.
     """
 
-    def __init__(self, mpnet, num_classes=2):
-        super(MPNetForQuestionAnswering, self).__init__()
-        self.mpnet = mpnet
-        self.num_classes = num_classes
-        self.qa_outputs = nn.Linear(self.mpnet.config["hidden_size"],
-                                    num_classes)
-
-        self.apply(self.init_weights)
+    def __init__(self, config: MPNetConfig):
+        super(MPNetForQuestionAnswering, self).__init__(config)
+        self.mpnet = MPNetModel(config)
+        self.qa_outputs = nn.Linear(config.hidden_size, 2)
 
     def forward(self, input_ids, position_ids=None, attention_mask=None):
         r"""
@@ -909,7 +712,7 @@ class MPNetForQuestionAnswering(MPNetPretrainedModel):
 
                 tokenizer = MPNetTokenizer.from_pretrained('mpnet-base')
                 model = MPNetForQuestionAnswering.from_pretrained('mpnet-base')
-                
+
                 inputs = tokenizer("Welcome to use PaddlePaddle and PaddleNLP!")
                 inputs = {k:paddle.to_tensor([v]) for (k, v) in inputs.items()}
                 outputs = model(**inputs)
@@ -919,9 +722,7 @@ class MPNetForQuestionAnswering(MPNetPretrainedModel):
 
         """
 
-        sequence_output, _ = self.mpnet(input_ids,
-                                        position_ids=position_ids,
-                                        attention_mask=attention_mask)
+        sequence_output, _ = self.mpnet(input_ids, position_ids=position_ids, attention_mask=attention_mask)
         logits = self.qa_outputs(sequence_output)
         logits = paddle.transpose(logits, perm=[2, 0, 1])
 

@@ -13,20 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import glob
-import json
-import math
-import os
-import copy
-import itertools
-
-import numpy as np
-from .utils import download_file
 from .text_generation import TextGenerationTask
-from .task import Task
 
 usage = r"""
-           from paddlenlp import Taskflow 
+           from paddlenlp import Taskflow
 
            poetry = Taskflow("poetry_generation")
            poetry("林密不见人")
@@ -43,18 +33,18 @@ usage = r"""
 URLS = {
     "gpt-cpm-large-cn": [
         "https://bj.bcebos.com/paddlenlp/taskflow/text_generation/gpt-cpm/gpt-cpm-large-cn_params.tar",
-        "5aad6f81053cfdbba4797f044fcf66d1"
+        "5aad6f81053cfdbba4797f044fcf66d1",
     ],
 }
 
 
 class PoetryGenerationTask(TextGenerationTask):
     """
-    The text generation model to predict the question or chinese  poetry. 
+    The text generation model to predict the question or chinese  poetry.
     Args:
         task(string): The name of task.
         model(string): The model name in the task.
-        kwargs (dict, optional): Additional keyword arguments passed along to the specific task. 
+        kwargs (dict, optional): Additional keyword arguments passed along to the specific task.
     """
 
     def __init__(self, task, model, **kwargs):

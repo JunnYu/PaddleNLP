@@ -12,7 +12,7 @@
 
 ## 2. 产品功能介绍
 
-本项目提供了低成本搭建端到端问答系统的能力。用户只需要处理好自己的业务数据，就可以使用本项目预置的问答系统模型(召回模型、排序模型、阅读理解模型)快速搭建一个针对自己业务数据的问答系统，并可以提供基于[Streamlit](https://streamlit.io/) 的 Web 可视化服务。
+本项目提供了低成本搭建端到端问答系统的能力。用户只需要处理好自己的业务数据，就可以使用本项目预置的问答系统模型(召回模型、排序模型、阅读理解模型)快速搭建一个针对自己业务数据的问答系统，并可以提供基于[Streamlit](https://streamlit.io/) 的 Web 可视化服务。以下是使用预置模型的教程，如果用户想训练并接入自己训练的模型，对于召回和排序模型训练可以参考[Neural Search](https://github.com/PaddlePaddle/PaddleNLP/tree/develop/applications/neural_search),对于其中的答案抽取模型，训练教程请参考[machine_reading_comprehension](https://github.com/PaddlePaddle/PaddleNLP/tree/develop/examples/machine_reading_comprehension/DuReader-robust)，召回和排序模型接入流程参考语义检索的Neural Search接入流程即可，阅读理解模型只需要在加载模型的时候，把模型名称换成您的模型的路径即可。
 
 <div align="center">
     <img src="https://user-images.githubusercontent.com/12107462/190298926-a1fc92f3-5ec7-4265-8357-ab860cc1fed2.gif" width="500px">
@@ -36,7 +36,7 @@
 本实验采用了以下的运行环境进行，详细说明如下，用户也可以在自己 GPU 硬件环境进行：
 
 a. 软件环境：
-- python >= 3.7.0
+- python >= 3.7.3
 - paddlenlp >= 2.2.1
 - paddlepaddle-gpu >=2.3
 - CUDA Version: 10.2
@@ -58,6 +58,13 @@ cd ${HOME}/PaddleNLP/pipelines/
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 python setup.py install
 ```
+
+```
+# 下载pipelines源代码
+git clone https://github.com/PaddlePaddle/PaddleNLP.git
+cd PaddleNLP/pipelines
+```
+
 【注意】以下的所有的流程都只需要在`pipelines`根目录下进行，不需要跳转目录
 ### 3.2 数据说明
 问答知识库数据是我们爬取了百度百科上对国内重点城市的百科介绍文档。我们将所有文档中的非结构化文本数据抽取出来， 按照段落切分后作为问答系统知识库的数据，一共包含 365 个城市的百科介绍文档、切分后共 1318 个段落。
@@ -147,9 +154,11 @@ sh examples/question-answering/run_qa_server.sh
 ```
 curl -X POST -k http://localhost:8891/query -H 'Content-Type: application/json' -d '{"query": "北京市有多少个行政区？","params": {"Retriever": {"top_k": 5}, "Ranker":{"top_k": 5}}}'
 ```
+更多API接口文档及其调用方式请参考链接[http://127.0.0.1:8891/docs](http://127.0.0.1:8891/docs)
 
 #### 3.4.4 启动 WebUI
 ```bash
+pip install streamlit==1.11.1
 # 配置模型服务地址
 export API_ENDPOINT=http://127.0.0.1:8891
 # 在指定端口 8502 启动 WebUI

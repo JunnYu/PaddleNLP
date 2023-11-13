@@ -1,4 +1,4 @@
-# Copyright (c) 2021 PaddlePaddle Authors. All Rights Reserved.
+# Copyright (c) 2023 PaddlePaddle Authors. All Rights Reserved.
 # Copyright 2018 The Google AI Language Team Authors and The HuggingFace Inc. team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,12 +16,12 @@
 
 from ..bert.tokenizer import BertTokenizer
 
-__all__ = ['LayoutLMv2Tokenizer']
+__all__ = ["LayoutLMv2Tokenizer"]
 
 PRETRAINED_POSITIONAL_EMBEDDINGS_SIZES = {
     "layoutlmv2-base-uncased": 512,
     "layoutlmv2-large-uncased": 512,
-    "layoutlmv2-wo-backbone-base-uncased": 512
+    "layoutlmv2-wo-backbone-base-uncased": 512,
 }
 
 
@@ -31,22 +31,19 @@ class LayoutLMv2Tokenizer(BertTokenizer):
     `BertTokenizer <https://paddlenlp.readthedocs.io/zh/latest/source/paddlenlp.transformers.bert.tokenizer.html>`__.
     For more information regarding those methods, please refer to this superclass.
     """
+
     resource_files_names = {"vocab_file": "vocab.txt"}  # for save_pretrained
     pretrained_resource_files_map = {
         "vocab_file": {
-            "layoutlmv2-base-uncased":
-            "https://bj.bcebos.com/paddlenlp/models/transformers/layoutlmv2/layoutlmv2-base-uncased/vocab.txt",
-            "layoutlmv2-large-uncased":
-            "https://bj.bcebos.com/paddlenlp/models/transformers/layoutlmv2/layoutlmv2-large-uncased/vocab.txt",
+            "layoutlmv2-base-uncased": "https://bj.bcebos.com/paddlenlp/models/transformers/layoutlmv2/layoutlmv2-base-uncased/vocab.txt",
+            "layoutlmv2-large-uncased": "https://bj.bcebos.com/paddlenlp/models/transformers/layoutlmv2/layoutlmv2-large-uncased/vocab.txt",
+            "layoutlmv2-wo-backbone-base-uncased": "https://bj.bcebos.com/paddlenlp/models/transformers/layoutlmv2/layoutlmv2-base-uncased/vocab.txt",
         }
     }
     pretrained_init_configuration = {
-        "layoutlmv2-base-uncased": {
-            "do_lower_case": True
-        },
-        "layoutlmv2-large-uncased": {
-            "do_lower_case": True
-        },
+        "layoutlmv2-base-uncased": {"do_lower_case": True},
+        "layoutlmv2-large-uncased": {"do_lower_case": True},
+        "layoutlmv2-wo-backbone-base-uncased": {"do_lower_case": True},
     }
 
     max_model_input_sizes = PRETRAINED_POSITIONAL_EMBEDDINGS_SIZES

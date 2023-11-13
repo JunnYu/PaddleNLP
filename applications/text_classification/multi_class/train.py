@@ -12,206 +12,219 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import re
-import json
 import functools
-import random
-import time
+import json
 import os
-import argparse
+import shutil
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
 
 import numpy as np
-
 import paddle
-import paddle.nn.functional as F
-from paddle.metric import Accuracy
-from paddle.io import DataLoader, BatchSampler, DistributedBatchSampler
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    precision_recall_fscore_support,
+)
+from utils import log_metrics_debug, preprocess_function, read_local_dataset
+
 from paddlenlp.data import DataCollatorWithPadding
 from paddlenlp.datasets import load_dataset
-from paddlenlp.transformers import AutoModelForSequenceClassification, AutoTokenizer, LinearDecayWithWarmup
+from paddlenlp.trainer import (
+    CompressionArguments,
+    EarlyStoppingCallback,
+    PdArgumentParser,
+    Trainer,
+)
+from paddlenlp.transformers import (
+    AutoModelForSequenceClassification,
+    AutoTokenizer,
+    export_model,
+)
 from paddlenlp.utils.log import logger
 
-from utils import evaluate, preprocess_function, read_local_dataset
+SUPPORTED_MODELS = [
+    "ernie-1.0-large-zh-cw",
+    "ernie-1.0-base-zh-cw",
+    "ernie-3.0-xbase-zh",
+    "ernie-3.0-base-zh",
+    "ernie-3.0-medium-zh",
+    "ernie-3.0-micro-zh",
+    "ernie-3.0-mini-zh",
+    "ernie-3.0-nano-zh",
+    "ernie-3.0-tiny-base-v2-zh",
+    "ernie-3.0-tiny-medium-v2-zh",
+    "ernie-3.0-tiny-micro-v2-zh",
+    "ernie-3.0-tiny-mini-v2-zh",
+    "ernie-3.0-tiny-nano-v2-zh ",
+    "ernie-3.0-tiny-pico-v2-zh",
+    "ernie-2.0-large-en",
+    "ernie-2.0-base-en",
+    "ernie-3.0-tiny-mini-v2-en",
+    "ernie-m-base",
+    "ernie-m-large",
+]
+
 
 # yapf: disable
-parser = argparse.ArgumentParser()
-parser.add_argument('--device', default="gpu", help="Select which device to train model, defaults to gpu.")
-parser.add_argument("--dataset_dir", required=True, default=None, type=str, help="Local dataset directory should include train.txt, dev.txt and label.txt")
-parser.add_argument("--save_dir", default="./checkpoint", type=str, help="The output directory where the model checkpoints will be written.")
-parser.add_argument("--max_seq_length", default=128, type=int, help="The maximum total input sequence length after tokenization. Sequences longer than this will be truncated, sequences shorter will be padded.")
-parser.add_argument('--model_name', default="ernie-3.0-medium-zh", help="Select model to train, defaults to ernie-3.0-medium-zh.",
-                    choices=["ernie-1.0-large-zh-cw","ernie-3.0-xbase-zh", "ernie-3.0-base-zh", "ernie-3.0-medium-zh", "ernie-3.0-micro-zh", "ernie-3.0-mini-zh", "ernie-3.0-nano-zh", "ernie-2.0-base-en", "ernie-2.0-large-en","ernie-m-base","ernie-m-large"])
-parser.add_argument("--batch_size", default=32, type=int, help="Batch size per GPU/CPU for training.")
-parser.add_argument("--learning_rate", default=3e-5, type=float, help="The initial learning rate for Adam.")
-parser.add_argument("--epochs", default=10, type=int, help="Total number of training epochs to perform.")
-parser.add_argument('--early_stop', action='store_true', help='Epoch before early stop.')
-parser.add_argument('--early_stop_nums', type=int, default=3, help='Number of epoch before early stop.')
-parser.add_argument("--logging_steps", default=5, type=int, help="The interval steps to logging.")
-parser.add_argument("--weight_decay", default=0.0, type=float, help="Weight decay if we apply some.")
-parser.add_argument('--warmup', action='store_true', help="whether use warmup strategy")
-parser.add_argument("--warmup_steps", default=0, type=int, help="Linear warmup steps over the training process.")
-parser.add_argument("--init_from_ckpt", type=str, default=None, help="The path of checkpoint to be loaded.")
-parser.add_argument("--seed", type=int, default=3, help="random seed for initialization")
-parser.add_argument("--train_file", type=str, default="train.txt", help="Train dataset file name")
-parser.add_argument("--dev_file", type=str, default="dev.txt", help="Dev dataset file name")
-parser.add_argument("--label_file", type=str, default="label.txt", help="Label file name")
-args = parser.parse_args()
+@dataclass
+class DataArguments:
+    max_length: int = field(default=128, metadata={"help": "Maximum number of tokens for the model."})
+    early_stopping: bool = field(default=False, metadata={"help": "Whether apply early stopping strategy."})
+    early_stopping_patience: int = field(default=4, metadata={"help": "Stop training when the specified metric worsens for early_stopping_patience evaluation calls"})
+    debug: bool = field(default=False, metadata={"help": "Whether choose debug mode."})
+    train_path: str = field(default='./data/train.txt', metadata={"help": "Train dataset file path."})
+    dev_path: str = field(default='./data/dev.txt', metadata={"help": "Dev dataset file path."})
+    test_path: str = field(default='./data/dev.txt', metadata={"help": "Test dataset file path."})
+    label_path: str = field(default='./data/label.txt', metadata={"help": "Label file path."})
+    bad_case_path: str = field(default='./data/bad_case.txt', metadata={"help": "Bad case file path."})
+
+
+@dataclass
+class ModelArguments:
+    model_name_or_path: str = field(default="ernie-3.0-tiny-medium-v2-zh", metadata={"help": "Build-in pretrained model name or the path to local model."})
+    export_model_dir: Optional[str] = field(default=None, metadata={"help": "Path to directory to store the exported inference model."})
 # yapf: enable
 
 
-def set_seed(seed):
-    """
-    Sets random seed
-    """
-    random.seed(seed)
-    np.random.seed(seed)
-    paddle.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
-
-
-def args_saving():
-    argsDict = args.__dict__
-    with open(os.path.join(args.save_dir, 'setting.txt'), 'w') as f:
-        f.writelines('------------------ start ------------------' + '\n')
-        for eachArg, value in argsDict.items():
-            f.writelines(eachArg + ' : ' + str(value) + '\n')
-        f.writelines('------------------- end -------------------')
-
-
-def train():
+def main():
     """
     Training a binary or multi classification model
     """
 
-    if not os.path.exists(args.save_dir):
-        os.makedirs(args.save_dir)
-    args_saving()
-    set_seed(args.seed)
-    paddle.set_device(args.device)
+    parser = PdArgumentParser((ModelArguments, DataArguments, CompressionArguments))
+    model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+    if training_args.do_compress:
+        training_args.strategy = "dynabert"
+    if training_args.do_train or training_args.do_compress:
+        training_args.print_config(model_args, "Model")
+        training_args.print_config(data_args, "Data")
+    paddle.set_device(training_args.device)
 
-    rank = paddle.distributed.get_rank()
-    if paddle.distributed.get_world_size() > 1:
-        paddle.distributed.init_parallel_env()
-
-    # load and preprocess dataset
-
-    label_list = {}
-    with open(os.path.join(args.dataset_dir, args.label_file),
-              'r',
-              encoding='utf-8') as f:
+    # Define id2label
+    id2label = {}
+    label2id = {}
+    with open(data_args.label_path, "r", encoding="utf-8") as f:
         for i, line in enumerate(f):
             l = line.strip()
-            label_list[l] = i
-    train_ds = load_dataset(read_local_dataset,
-                            path=os.path.join(args.dataset_dir,
-                                              args.train_file),
-                            label_list=label_list,
-                            lazy=False)
-    dev_ds = load_dataset(read_local_dataset,
-                          path=os.path.join(args.dataset_dir, args.dev_file),
-                          label_list=label_list,
-                          lazy=False)
+            id2label[i] = l
+            label2id[l] = i
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-    trans_func = functools.partial(preprocess_function,
-                                   tokenizer=tokenizer,
-                                   max_seq_length=args.max_seq_length)
+    # Define model & tokenizer
+    if os.path.isdir(model_args.model_name_or_path):
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_args.model_name_or_path, label2id=label2id, id2label=id2label
+        )
+    elif model_args.model_name_or_path in SUPPORTED_MODELS:
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_args.model_name_or_path, num_classes=len(label2id), label2id=label2id, id2label=id2label
+        )
+    else:
+        raise ValueError(
+            f"{model_args.model_name_or_path} is not a supported model type. Either use a local model path or select a model from {SUPPORTED_MODELS}"
+        )
+    tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path)
+
+    # load and preprocess dataset
+    train_ds = load_dataset(read_local_dataset, path=data_args.train_path, label2id=label2id, lazy=False)
+    dev_ds = load_dataset(read_local_dataset, path=data_args.dev_path, label2id=label2id, lazy=False)
+    trans_func = functools.partial(preprocess_function, tokenizer=tokenizer, max_length=data_args.max_length)
     train_ds = train_ds.map(trans_func)
     dev_ds = dev_ds.map(trans_func)
-    # batchify dataset
-    collate_fn = DataCollatorWithPadding(tokenizer)
-    if paddle.distributed.get_world_size() > 1:
-        train_batch_sampler = DistributedBatchSampler(
-            train_ds, batch_size=args.batch_size, shuffle=True)
+
+    if data_args.debug:
+        test_ds = load_dataset(read_local_dataset, path=data_args.test_path, label2id=label2id, lazy=False)
+        test_ds = test_ds.map(trans_func)
+
+    # Define the metric function.
+    def compute_metrics(eval_preds):
+        pred_ids = np.argmax(eval_preds.predictions, axis=-1)
+        metrics = {}
+        metrics["accuracy"] = accuracy_score(y_true=eval_preds.label_ids, y_pred=pred_ids)
+        for average in ["micro", "macro"]:
+            precision, recall, f1, _ = precision_recall_fscore_support(
+                y_true=eval_preds.label_ids, y_pred=pred_ids, average=average
+            )
+            metrics[f"{average}_precision"] = precision
+            metrics[f"{average}_recall"] = recall
+            metrics[f"{average}_f1"] = f1
+        return metrics
+
+    def compute_metrics_debug(eval_preds):
+        pred_ids = np.argmax(eval_preds.predictions, axis=-1)
+        metrics = classification_report(eval_preds.label_ids, pred_ids, output_dict=True)
+        return metrics
+
+    # Define the early-stopping callback.
+    if data_args.early_stopping:
+        callbacks = [EarlyStoppingCallback(early_stopping_patience=data_args.early_stopping_patience)]
     else:
-        train_batch_sampler = BatchSampler(train_ds,
-                                           batch_size=args.batch_size,
-                                           shuffle=True)
-    dev_batch_sampler = BatchSampler(dev_ds,
-                                     batch_size=args.batch_size,
-                                     shuffle=False)
-    train_data_loader = DataLoader(dataset=train_ds,
-                                   batch_sampler=train_batch_sampler,
-                                   collate_fn=collate_fn)
-    dev_data_loader = DataLoader(dataset=dev_ds,
-                                 batch_sampler=dev_batch_sampler,
-                                 collate_fn=collate_fn)
+        callbacks = None
 
-    # define model
-    model = AutoModelForSequenceClassification.from_pretrained(
-        args.model_name, num_classes=len(label_list))
-    if args.init_from_ckpt and os.path.isfile(args.init_from_ckpt):
-        state_dict = paddle.load(args.init_from_ckpt)
-        model.set_dict(state_dict)
-    model = paddle.DataParallel(model)
+    # Define Trainer
+    trainer = Trainer(
+        model=model,
+        tokenizer=tokenizer,
+        args=training_args,
+        criterion=paddle.nn.loss.CrossEntropyLoss(),
+        train_dataset=train_ds,
+        eval_dataset=dev_ds,
+        callbacks=callbacks,
+        data_collator=DataCollatorWithPadding(tokenizer),
+        compute_metrics=compute_metrics_debug if data_args.debug else compute_metrics,
+    )
 
-    num_training_steps = len(train_data_loader) * args.epochs
-    lr_scheduler = LinearDecayWithWarmup(args.learning_rate, num_training_steps,
-                                         args.warmup_steps)
+    # Training
+    if training_args.do_train:
+        train_result = trainer.train()
+        metrics = train_result.metrics
+        trainer.save_model()
+        trainer.log_metrics("train", metrics)
+        for checkpoint_path in Path(training_args.output_dir).glob("checkpoint-*"):
+            shutil.rmtree(checkpoint_path)
 
-    # Generate parameter names needed to perform weight decay.
-    # All bias and LayerNorm parameters are excluded.
-    decay_params = [
-        p.name for n, p in model.named_parameters()
-        if not any(nd in n for nd in ["bias", "norm"])
-    ]
-    optimizer = paddle.optimizer.AdamW(
-        learning_rate=lr_scheduler,
-        parameters=model.parameters(),
-        weight_decay=args.weight_decay,
-        apply_decay_param_fun=lambda x: x in decay_params)
+    # Evaluate and tests model
+    if training_args.do_eval:
+        if data_args.debug:
+            output = trainer.predict(test_ds)
+            log_metrics_debug(output, id2label, test_ds, data_args.bad_case_path)
+        else:
+            eval_metrics = trainer.evaluate()
+            trainer.log_metrics("eval", eval_metrics)
 
-    criterion = paddle.nn.loss.CrossEntropyLoss()
-    metric = Accuracy()
+    # export inference model
+    if training_args.do_export:
+        if model.init_config["init_class"] in ["ErnieMForSequenceClassification"]:
+            input_spec = [paddle.static.InputSpec(shape=[None, None], dtype="int64", name="input_ids")]
+        else:
+            input_spec = [
+                paddle.static.InputSpec(shape=[None, None], dtype="int64", name="input_ids"),
+                paddle.static.InputSpec(shape=[None, None], dtype="int64", name="token_type_ids"),
+            ]
+        if model_args.export_model_dir is None:
+            model_args.export_model_dir = os.path.join(training_args.output_dir, "export")
+        export_model(model=trainer.model, input_spec=input_spec, path=model_args.export_model_dir)
+        tokenizer.save_pretrained(model_args.export_model_dir)
+        id2label_file = os.path.join(model_args.export_model_dir, "id2label.json")
+        with open(id2label_file, "w", encoding="utf-8") as f:
+            json.dump(id2label, f, ensure_ascii=False)
+            logger.info(f"id2label file saved in {id2label_file}")
 
-    global_step = 0
-    best_acc = 0
-    early_stop_count = 0
-    tic_train = time.time()
+    # compress
+    if training_args.do_compress:
+        trainer.compress()
+        for width_mult in training_args.width_mult_list:
+            pruned_infer_model_dir = os.path.join(training_args.output_dir, "width_mult_" + str(round(width_mult, 2)))
+            tokenizer.save_pretrained(pruned_infer_model_dir)
+            id2label_file = os.path.join(pruned_infer_model_dir, "id2label.json")
+            with open(id2label_file, "w", encoding="utf-8") as f:
+                json.dump(id2label, f, ensure_ascii=False)
+                logger.info(f"id2label file saved in {id2label_file}")
 
-    for epoch in range(1, args.epochs + 1):
-
-        if args.early_stop and early_stop_count >= args.early_stop_nums:
-            logger.info("Early stop!")
-            break
-
-        for step, batch in enumerate(train_data_loader, start=1):
-            labels = batch.pop("labels")
-            logits = model(**batch)
-            loss = criterion(logits, labels)
-
-            loss.backward()
-            optimizer.step()
-            if args.warmup:
-                lr_scheduler.step()
-            optimizer.clear_grad()
-
-            global_step += 1
-            if global_step % args.logging_steps == 0 and rank == 0:
-                logger.info(
-                    "global step %d, epoch: %d, batch: %d, loss: %.5f, speed: %.2f step/s"
-                    % (global_step, epoch, step, loss, args.logging_steps /
-                       (time.time() - tic_train)))
-                tic_train = time.time()
-
-        early_stop_count += 1
-        acc = evaluate(model, criterion, metric, dev_data_loader)
-        save_best_path = args.save_dir
-        if not os.path.exists(save_best_path):
-            os.makedirs(save_best_path)
-
-        # save models
-        if acc > best_acc:
-            early_stop_count = 0
-            best_acc = acc
-            model._layers.save_pretrained(save_best_path)
-            tokenizer.save_pretrained(save_best_path)
-        logger.info("Current best accuracy: %.5f" % (best_acc))
-
-    logger.info("Final best accuracy: %.5f" % (best_acc))
-    logger.info("Save best accuracy text classification model in %s" %
-                (args.save_dir))
+    for path in Path(training_args.output_dir).glob("runs"):
+        shutil.rmtree(path)
 
 
 if __name__ == "__main__":
-    train()
+    main()

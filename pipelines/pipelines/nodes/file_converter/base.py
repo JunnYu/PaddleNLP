@@ -13,10 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List, Optional, Dict, Any, Union
-
 from abc import abstractmethod
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+
 import langdetect
 
 from pipelines.nodes.base import BaseComponent
@@ -48,8 +48,7 @@ class BaseConverter(BaseComponent):
         """
 
         # save init parameters to enable export of component config as YAML
-        self.set_config(remove_numeric_tables=remove_numeric_tables,
-                        valid_languages=valid_languages)
+        self.set_config(remove_numeric_tables=remove_numeric_tables, valid_languages=valid_languages)
 
         self.remove_numeric_tables = remove_numeric_tables
         self.valid_languages = valid_languages
@@ -85,9 +84,7 @@ class BaseConverter(BaseComponent):
         """
         pass
 
-    def validate_language(self,
-                          text: str,
-                          valid_languages: Optional[List[str]] = None) -> bool:
+    def validate_language(self, text: str, valid_languages: Optional[List[str]] = None) -> bool:
         """
         Validate if the language of the text is one of valid languages.
         """
@@ -105,14 +102,12 @@ class BaseConverter(BaseComponent):
         return lang in valid_languages
 
     def run(  # type: ignore
-            self,
-            file_paths: Union[Path, List[Path]],  # type: ignore
-            meta: Optional[Union[Dict[str, str],
-                                 List[Dict[str, str]]]] = None,  # type: ignore
-            remove_numeric_tables: Optional[bool] = None,  # type: ignore
-            valid_languages: Optional[List[str]] = None,  # type: ignore
+        self,
+        file_paths: Union[Path, List[Path]],  # type: ignore
+        meta: Optional[Union[Dict[str, str], List[Dict[str, str]]]] = None,  # type: ignore
+        remove_numeric_tables: Optional[bool] = None,  # type: ignore
+        valid_languages: Optional[List[str]] = None,  # type: ignore
     ):
-
         if isinstance(file_paths, Path):
             file_paths = [file_paths]
 
@@ -122,12 +117,11 @@ class BaseConverter(BaseComponent):
         documents: list = []
         for file_path, file_meta in zip(file_paths, meta):
             for doc in self.convert(
-                    file_path=file_path,
-                    meta=file_meta,
-                    remove_numeric_tables=remove_numeric_tables,
-                    valid_languages=valid_languages,
+                file_path=file_path,
+                meta=file_meta,
+                remove_numeric_tables=remove_numeric_tables,
+                valid_languages=valid_languages,
             ):
                 documents.append(doc)
-
         result = {"documents": documents}
         return result, "output_1"

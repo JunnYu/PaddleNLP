@@ -11,22 +11,37 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import numpy as np
-import unittest
-import paddle
-import os
-import inspect
-from distutils.util import strtobool
-from collections.abc import Mapping
+from __future__ import annotations
 
-__all__ = ['get_vocab_list', 'stable_softmax', 'cross_entropy']
+import copy
+import gc
+import inspect
+import json
+import os
+import subprocess
+import sys
+import unittest
+from collections.abc import Mapping
+from contextlib import contextmanager
+
+import numpy as np
+import paddle
+import yaml
+
+from paddlenlp.trainer.argparser import strtobool
+from paddlenlp.utils.import_utils import is_package_available
+
+__all__ = ["get_vocab_list", "stable_softmax", "cross_entropy"]
+
+
+class PaddleNLPModelTest(unittest.TestCase):
+    def tearDown(self):
+        gc.collect()
 
 
 def get_vocab_list(vocab_path):
     with open(vocab_path, "r", encoding="utf-8") as f:
-        vocab_list = [
-            vocab.rstrip("\n").split("\t")[0] for vocab in f.readlines()
-        ]
+        vocab_list = [vocab.rstrip("\n").split("\t")[0] for vocab in f.readlines()]
         return vocab_list
 
 
@@ -34,7 +49,7 @@ def stable_softmax(x):
     """Compute the softmax of vector x in a numerically stable way."""
     # clip to shiftx, otherwise, when calc loss with
     # log(exp(shiftx)), may get log(0)=INF
-    shiftx = (x - np.max(x)).clip(-64.)
+    shiftx = (x - np.max(x)).clip(-64.0)
     exps = np.exp(shiftx)
     return exps / np.sum(exps)
 
@@ -47,7 +62,7 @@ def cross_entropy(softmax, label, soft_label, axis, ignore_index=-1):
     axis %= len(shape)
     n = int(np.prod(shape[:axis]))
     axis_dim = shape[axis]
-    remain = int(np.prod(shape[axis + 1:]))
+    remain = int(np.prod(shape[axis + 1 :]))
     softmax_reshape = softmax.reshape((n, axis_dim, remain))
     label_reshape = label.reshape((n, 1, remain))
     result = np.zeros_like(label_reshape, dtype=softmax.dtype)
@@ -59,19 +74,13 @@ def cross_entropy(softmax, label, soft_label, axis, ignore_index=-1):
     return result.reshape(label.shape)
 
 
-def softmax_with_cross_entropy(logits,
-                               label,
-                               soft_label=False,
-                               axis=-1,
-                               ignore_index=-1):
+def softmax_with_cross_entropy(logits, label, soft_label=False, axis=-1, ignore_index=-1):
     softmax = np.apply_along_axis(stable_softmax, -1, logits)
     return cross_entropy(softmax, label, soft_label, axis, ignore_index)
 
 
 def assert_raises(Error=AssertionError):
-
     def assert_raises_error(func):
-
         def wrapper(self, *args, **kwargs):
             with self.assertRaises(Error):
                 func(self, *args, **kwargs)
@@ -83,20 +92,108 @@ def assert_raises(Error=AssertionError):
 
 def create_test_data(file=__file__):
     dir_path = os.path.dirname(os.path.realpath(file))
-    test_data_file = os.path.join(dir_path, 'dict.txt')
+    test_data_file = os.path.join(dir_path, "dict.txt")
     with open(test_data_file, "w") as f:
         vocab_list = [
-            '[UNK]', 'AT&T', 'B超', 'c#', 'C#', 'c++', 'C++', 'T恤', 'A座', 'A股',
-            'A型', 'A轮', 'AA制', 'AB型', 'B座', 'B股', 'B型', 'B轮', 'BB机', 'BP机',
-            'C盘', 'C座', 'C语言', 'CD盒', 'CD机', 'CALL机', 'D盘', 'D座', 'D版', 'E盘',
-            'E座', 'E化', 'E通', 'F盘', 'F座', 'G盘', 'H盘', 'H股', 'I盘', 'IC卡', 'IP卡',
-            'IP电话', 'IP地址', 'K党', 'K歌之王', 'N年', 'O型', 'PC机', 'PH值', 'SIM卡',
-            'U盘', 'VISA卡', 'Z盘', 'Q版', 'QQ号', 'RSS订阅', 'T盘', 'X光', 'X光线', 'X射线',
-            'γ射线', 'T恤衫', 'T型台', 'T台', '4S店', '4s店', '江南style', '江南Style',
-            '1号店', '小S', '大S', '阿Q', '一', '一一', '一一二', '一一例', '一一分', '一一列举',
-            '一一对', '一一对应', '一一记', '一一道来', '一丁', '一丁不识', '一丁点', '一丁点儿', '一七',
-            '一七八不', '一万', '一万一千', '一万一千五百二十颗', '一万一千八百八十斤', '一万一千多间',
-            '一万一千零九十五册', '一万七千', '一万七千余', '一万七千多', '一万七千多户', '一万万'
+            "[UNK]",
+            "AT&T",
+            "B超",
+            "c#",
+            "C#",
+            "c++",
+            "C++",
+            "T恤",
+            "A座",
+            "A股",
+            "A型",
+            "A轮",
+            "AA制",
+            "AB型",
+            "B座",
+            "B股",
+            "B型",
+            "B轮",
+            "BB机",
+            "BP机",
+            "C盘",
+            "C座",
+            "C语言",
+            "CD盒",
+            "CD机",
+            "CALL机",
+            "D盘",
+            "D座",
+            "D版",
+            "E盘",
+            "E座",
+            "E化",
+            "E通",
+            "F盘",
+            "F座",
+            "G盘",
+            "H盘",
+            "H股",
+            "I盘",
+            "IC卡",
+            "IP卡",
+            "IP电话",
+            "IP地址",
+            "K党",
+            "K歌之王",
+            "N年",
+            "O型",
+            "PC机",
+            "PH值",
+            "SIM卡",
+            "U盘",
+            "VISA卡",
+            "Z盘",
+            "Q版",
+            "QQ号",
+            "RSS订阅",
+            "T盘",
+            "X光",
+            "X光线",
+            "X射线",
+            "γ射线",
+            "T恤衫",
+            "T型台",
+            "T台",
+            "4S店",
+            "4s店",
+            "江南style",
+            "江南Style",
+            "1号店",
+            "小S",
+            "大S",
+            "阿Q",
+            "一",
+            "一一",
+            "一一二",
+            "一一例",
+            "一一分",
+            "一一列举",
+            "一一对",
+            "一一对应",
+            "一一记",
+            "一一道来",
+            "一丁",
+            "一丁不识",
+            "一丁点",
+            "一丁点儿",
+            "一七",
+            "一七八不",
+            "一万",
+            "一万一千",
+            "一万一千五百二十颗",
+            "一万一千八百八十斤",
+            "一万一千多间",
+            "一万一千零九十五册",
+            "一万七千",
+            "一万七千余",
+            "一万七千多",
+            "一万七千多户",
+            "一万万",
         ]
         for vocab in vocab_list:
             f.write("{}\n".format(vocab))
@@ -110,9 +207,7 @@ def get_bool_from_env(key, default_value=False):
     try:
         value = strtobool(value)
     except ValueError:
-        raise ValueError(
-            f"If set, {key} must be yes, no, true, false, 0 or 1 (case insensitive)."
-        )
+        raise ValueError(f"If set, {key} must be yes, no, true, false, 0 or 1 (case insensitive).")
     return value
 
 
@@ -165,10 +260,7 @@ def nested_simplify(obj, decimals=3):
     elif isinstance(obj, np.ndarray):
         return nested_simplify(obj.tolist())
     elif isinstance(obj, Mapping):
-        return {
-            nested_simplify(k, decimals): nested_simplify(v, decimals)
-            for k, v in obj.items()
-        }
+        return {nested_simplify(k, decimals): nested_simplify(v, decimals) for k, v in obj.items()}
     elif isinstance(obj, (str, int, np.int64)):
         return obj
     elif obj is None:
@@ -181,3 +273,137 @@ def nested_simplify(obj, decimals=3):
         return nested_simplify(obj.item(), decimals)
     else:
         raise Exception(f"Not supported: {type(obj)}")
+
+
+def require_package(*package_names):
+    """decorator which can detect that it will require the specific package
+
+    Args:
+        package_name (str): the name of package
+    """
+
+    def decorator(func):
+        for package_name in package_names:
+            if not is_package_available(package_name):
+                return unittest.skip(f"package<{package_name}> not found, so to skip this test")(func)
+        return func
+
+    return decorator
+
+
+def is_slow_test() -> bool:
+    """check whether is the slow test
+
+    Returns:
+        bool: whether is the slow test
+    """
+    return os.getenv("RUN_SLOW_TEST") is not None
+
+
+def load_test_config(config_file: str, key: str, sub_key: str = None) -> dict | None:
+    """parse config file to argv
+
+    Args:
+        config_dir (str, optional): the path of config file. Defaults to None.
+        config_name (str, optional): the name key in config file. Defaults to None.
+    """
+    # 1. load the config with key and test env(default, test)
+    with open(config_file, "r", encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+
+    assert key in config, f"<{key}> should be the top key in configuration file"
+    config = config[key]
+
+    mode_key = "slow" if is_slow_test() else "default"
+
+    if mode_key not in config:
+        return None
+
+    # 2. load base common config
+    base_config = config.get("base", {})
+
+    config = config.get(mode_key, {})
+    config.update(base_config)
+
+    # 3. load sub key config
+    sub_config = config.get(sub_key, {})
+    config.update(sub_config)
+
+    # remove dict value
+    for key in list(config.keys()):
+        if isinstance(config[key], dict):
+            config.pop(key)
+
+    return config
+
+
+def construct_argv(config: dict) -> list[str]:
+    """construct argv by configs
+
+    Args:
+        config (dict): the config data
+
+    Returns:
+        list[str]: the argvs
+    """
+    # get current test
+    # refer to: https://docs.pytest.org/en/latest/example/simple.html#pytest-current-test-environment-variable
+    current_test = "tests/__init__.py"
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        current_test = os.getenv("PYTEST_CURRENT_TEST").split("::")[0]
+
+    argv = [current_test]
+    for key, value in config.items():
+        argv.append(f"--{key}")
+        argv.append(str(value))
+
+    return argv
+
+
+@contextmanager
+def argv_context_guard(config: dict):
+    """construct argv by config
+
+    Args:
+        config (dict): the configuration to argv
+    """
+    old_argv = copy.deepcopy(sys.argv)
+    argv = construct_argv(config)
+    sys.argv = argv
+    yield
+    sys.argv = old_argv
+
+
+def update_params(json_file: str, params: dict):
+    """update params in json file
+
+    Args:
+        json_file (str): the path of json file
+        params (dict): the parameters need to update
+    """
+    with open(json_file, "r") as f:
+        data = json.load(f)
+        data.update(params)
+    with open(json_file, "w") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+class SubprocessCallException(Exception):
+    pass
+
+
+def run_command(command: list[str], return_stdout=False):
+    """
+    Runs `command` with `subprocess.check_output` and will potentially return the `stdout`. Will also properly capture
+    if an error occured while running `command`
+    """
+    try:
+        output = subprocess.check_output(command, stderr=subprocess.STDOUT, shell=True)
+        if return_stdout:
+            if hasattr(output, "decode"):
+                output = output.decode("utf-8")
+            return output
+    except subprocess.CalledProcessError as e:
+        raise SubprocessCallException(
+            f"Command `{' '.join(command)}` failed with the following error:\n\n{e.output.decode()}"
+        ) from e

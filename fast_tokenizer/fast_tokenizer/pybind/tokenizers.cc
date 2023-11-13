@@ -12,21 +12,21 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License. */
 
+#include "fast_tokenizer/pybind/tokenizers.h"
+
+#include <Python.h>
+
 #include <unordered_map>
 
 #include "fast_tokenizer/core/tokenizer.h"
 #include "fast_tokenizer/decoders/decoders.h"
-#include "glog/logging.h"
 #include "fast_tokenizer/models/models.h"
 #include "fast_tokenizer/normalizers/normalizers.h"
 #include "fast_tokenizer/postprocessors/postprocessors.h"
 #include "fast_tokenizer/pretokenizers/pretokenizers.h"
-
-#include <Python.h>
-
 #include "fast_tokenizer/pybind/exception.h"
-#include "fast_tokenizer/pybind/tokenizers.h"
 #include "fast_tokenizer/pybind/utils.h"
+#include "glog/logging.h"
 
 namespace py = pybind11;
 
@@ -146,6 +146,13 @@ static int TokenizerPropertiesSetPreTokenizer(TokenizerObject* self,
         py_obj.cast<const pretokenizers::WhitespacePreTokenizer&>();
     self->tokenizer.SetPreTokenizer(pretokenizer);
   } else if (pybind11::type::of(py_obj).is(
+                 py::type::of<
+                     pretokenizers::WhitespaceAndPunctuationPreTokenizer>())) {
+    const auto& pretokenizer =
+        py_obj
+            .cast<const pretokenizers::WhitespaceAndPunctuationPreTokenizer&>();
+    self->tokenizer.SetPreTokenizer(pretokenizer);
+  } else if (pybind11::type::of(py_obj).is(
                  py::type::of<pretokenizers::MetaSpacePreTokenizer>())) {
     const auto& pretokenizer =
         py_obj.cast<const pretokenizers::MetaSpacePreTokenizer&>();
@@ -154,6 +161,16 @@ static int TokenizerPropertiesSetPreTokenizer(TokenizerObject* self,
                  py::type::of<pretokenizers::SequencePreTokenizer>())) {
     const auto& pretokenizer =
         py_obj.cast<const pretokenizers::SequencePreTokenizer&>();
+    self->tokenizer.SetPreTokenizer(pretokenizer);
+  } else if (pybind11::type::of(py_obj).is(
+                 py::type::of<pretokenizers::ByteLevelPreTokenizer>())) {
+    const auto& pretokenizer =
+        py_obj.cast<const pretokenizers::ByteLevelPreTokenizer&>();
+    self->tokenizer.SetPreTokenizer(pretokenizer);
+  } else if (pybind11::type::of(py_obj).is(
+                 py::type::of<pretokenizers::SplitPreTokenizer>())) {
+    const auto& pretokenizer =
+        py_obj.cast<const pretokenizers::SplitPreTokenizer&>();
     self->tokenizer.SetPreTokenizer(pretokenizer);
   } else if (py_obj.is(py::none())) {
     self->tokenizer.ReleasePreTokenizer();
@@ -221,6 +238,16 @@ static int TokenizerPropertiesSetPostProcessor(TokenizerObject* self,
                  py::type::of<postprocessors::TemplatePostProcessor>())) {
     const auto& processor =
         py_obj.cast<const postprocessors::TemplatePostProcessor&>();
+    self->tokenizer.SetPostProcessor(processor);
+  } else if (pybind11::type::of(py_obj).is(
+                 py::type::of<postprocessors::RobertaPostProcessor>())) {
+    const auto& processor =
+        py_obj.cast<const postprocessors::RobertaPostProcessor&>();
+    self->tokenizer.SetPostProcessor(processor);
+  } else if (pybind11::type::of(py_obj).is(
+                 py::type::of<postprocessors::ByteLevelPostProcessor>())) {
+    const auto& processor =
+        py_obj.cast<const postprocessors::ByteLevelPostProcessor&>();
     self->tokenizer.SetPostProcessor(processor);
   } else if (py_obj.is(py::none())) {
     self->tokenizer.ReleasePostProcessor();
@@ -411,7 +438,7 @@ int TokenizerInit(PyObject* self, PyObject* args, PyObject* kwargs) {
       py_tokenizer_ptr->tokenizer.SetModel(model);
     } else {
       std::ostringstream oss;
-      oss << "Expected tpye of arguments is `model`";
+      oss << "Expected type of arguments is `model`";
       throw std::runtime_error(oss.str());
     }
     return 0;
@@ -439,9 +466,20 @@ static PyObject* AddSpecialTokens(TokenizerObject* self,
       std::vector<core::AddedToken> added_tokens;
       Py_ssize_t tokens_num = PyList_GET_SIZE(kw_special_tokens);
       for (Py_ssize_t i = 0; i < tokens_num; ++i) {
-        added_tokens.push_back(core::AddedToken(
-            CastPyArg2AttrString(PyList_GetItem(kw_special_tokens, i), 0),
-            true));
+        PyObject* obj = PyList_GetItem(kw_special_tokens, i);
+        if (PyUnicode_Check(obj)) {
+          added_tokens.push_back(
+              core::AddedToken(CastPyArg2AttrString(obj, 0), true));
+        } else {
+          py::handle py_obj(obj);
+          if (!py::type::of(py_obj).is(py::type::of<core::AddedToken>())) {
+            throw std::runtime_error(
+                "The argument of tokens should be List[Union[str, "
+                "AddedToken]]");
+          }
+          auto added_token = py_obj.cast<core::AddedToken>();
+          added_tokens.push_back(added_token);
+        }
       }
       return ToPyObject(self->tokenizer.AddSpecialTokens(added_tokens));
     } else {
@@ -475,8 +513,20 @@ static PyObject* AddTokens(TokenizerObject* self,
       std::vector<core::AddedToken> added_tokens;
       Py_ssize_t tokens_num = PyList_GET_SIZE(kw_tokens);
       for (Py_ssize_t i = 0; i < tokens_num; ++i) {
-        added_tokens.push_back(core::AddedToken(
-            CastPyArg2AttrString(PyList_GetItem(kw_tokens, i), 0), true));
+        PyObject* obj = PyList_GetItem(kw_tokens, i);
+        if (PyUnicode_Check(obj)) {
+          added_tokens.push_back(
+              core::AddedToken(CastPyArg2AttrString(obj, 0), true));
+        } else {
+          py::handle py_obj(obj);
+          if (!py::type::of(py_obj).is(py::type::of<core::AddedToken>())) {
+            throw std::runtime_error(
+                "The argument of tokens should be List[Union[str, "
+                "AddedToken]]");
+          }
+          auto added_token = py_obj.cast<core::AddedToken>();
+          added_tokens.push_back(added_token);
+        }
       }
       return ToPyObject(self->tokenizer.AddTokens(added_tokens));
     } else {

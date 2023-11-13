@@ -12,12 +12,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# flake8: noqa
 
-from typing import Dict, List, Optional, Union, Any
-from pydantic import BaseModel, Field, Extra
-from pipelines.schema import Answer, Document, Label, Span
-from pydantic import BaseConfig
+from typing import Any, Dict, List, Optional, Union
+
+from pydantic import BaseConfig, BaseModel, Extra, Field
 from pydantic.dataclasses import dataclass as pydantic_dataclass
+
+from pipelines.schema import Answer, Document, Label, Span
 
 try:
     from typing import Literal
@@ -85,6 +87,14 @@ class QueryResponse(BaseModel):
     debug: Optional[Dict] = Field(None, alias="_debug")
 
 
+class Chatfile_QueryResponse(BaseModel):
+    query: str
+    result: str
+    answers: List[AnswerSerialized] = []
+    documents: List[DocumentSerialized] = []
+    debug: Optional[Dict] = Field(None, alias="_debug")
+
+
 class DocumentRequest(BaseModel):
     meta: dict
     params: Optional[dict] = None
@@ -101,8 +111,39 @@ class DocumentResponse(BaseModel):
     debug: Optional[Dict] = Field(None, alias="_debug")
 
 
+class SentaRequest(BaseModel):
+    meta: dict
+    params: Optional[dict] = None
+    debug: Optional[bool] = False
+
+    class Config:
+        # Forbid any extra fields in the request to avoid silent failures
+        extra = Extra.forbid
+
+
+class SentaResponse(BaseModel):
+    img_dict: dict = []
+    debug: Optional[bool] = False
+
+
 class QueryImageResponse(BaseModel):
     query: str
     answers: List[str] = []
     documents: List[DocumentSerialized] = []
+    debug: Optional[Dict] = Field(None, alias="_debug")
+
+
+class QueryQAPairRequest(BaseModel):
+    meta: List[str]
+    params: Optional[dict] = None
+    debug: Optional[bool] = False
+
+    class Config:
+        # Forbid any extra fields in the request to avoid silent failures
+        extra = Extra.forbid
+
+
+class QueryQAPairResponse(BaseModel):
+    meta: List[str]
+    filtered_cqa_triples: List[dict] = []
     debug: Optional[Dict] = Field(None, alias="_debug")

@@ -13,11 +13,11 @@
 车头如何放置车牌    后牌照怎么装
 ```
 
-语义检索系统的关键就在于，采用语义而非关键词方式进行召回，达到更精准、更广泛得召回相似结果的目的。
+语义检索系统的关键就在于，采用语义而非关键词方式进行召回，达到更精准、更广泛得召回相似结果的目的。如果需要关键字和语义检索两种结合方式请参考文档[多路召回](./Multi_Recall.md)
 
 ## 2. 产品功能介绍
 
-本项目提供了低成本搭建端到端语义检索系统的能力。用户只需要处理好自己的业务数据，就可以使用本项目预置的语义检索系统模型(召回模型、排序模型)快速搭建一个针对自己业务数据的问答系统，并可以提供 Web 化产品服务。以下是使用预置模型的教程，如果用户想接入自己训练的模型，可以参考[Neural Search的流程](./Neural_Search.md)。
+本项目提供了低成本搭建端到端语义检索系统的能力。用户只需要处理好自己的业务数据，就可以使用本项目预置的语义检索系统模型(召回模型、排序模型)快速搭建一个针对自己业务数据的问答系统，并可以提供 Web 化产品服务。以下是使用预置模型的教程，如果用户想训练并接入自己训练的模型，模型训练可以参考[Neural Search](https://github.com/PaddlePaddle/PaddleNLP/tree/develop/applications/neural_search),接入流程可以参考[Neural Search的流程](./Neural_Search.md)。
 
 <div align="center">
     <img src="https://user-images.githubusercontent.com/12107462/190302765-663ba441-9dd3-470a-8fee-f7a6f81da615.gif" width="500px">
@@ -42,7 +42,7 @@
 本实验采用了以下的运行环境进行，详细说明如下，用户也可以在自己 GPU 硬件环境进行：
 
 a. 软件环境：
-- python >= 3.7.0
+- python >= 3.7.3
 - paddlenlp >= 2.2.1
 - paddlepaddle-gpu >=2.3
 - CUDA Version: 10.2
@@ -63,6 +63,12 @@ pip install --upgrade paddle-pipelines -i https://pypi.tuna.tsinghua.edu.cn/simp
 cd ${HOME}/PaddleNLP/pipelines/
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 python setup.py install
+```
+
+```
+# 下载pipelines源代码
+git clone https://github.com/PaddlePaddle/PaddleNLP.git
+cd PaddleNLP/pipelines
 ```
 【注意】以下的所有的流程都只需要在`pipelines`根目录下进行，不需要跳转目录
 
@@ -115,6 +121,7 @@ curl http://localhost:9200/_aliases?pretty=true
 python utils/offline_ann.py --index_name dureader_robust_query_encoder \
                             --doc_dir data/dureader_dev \
                             --search_engine elastic \
+                            --embed_title True \
                             --delete_index
 ```
 可以使用下面的命令来查看数据：
@@ -131,6 +138,13 @@ curl http://localhost:9200/dureader_robust_query_encoder/_search
 * `port`: ANN索引引擎的端口号
 * `search_engine`: 选择的近似索引引擎elastic，milvus，默认elastic
 * `delete_index`: 是否删除现有的索引和数据，用于清空es的数据，默认为false
+* `embed_title`: 是否需要对标题建索引，默认为false，标题默认为文件名
+
+删除索引也可以使用下面的命令：
+
+```
+curl -XDELETE http://localhost:9200/dureader_robust_query_encoder
+```
 
 #### 3.4.3 启动 RestAPI 模型服务
 ```bash
@@ -139,7 +153,7 @@ export PIPELINE_YAML_PATH=rest_api/pipeline/semantic_search.yaml
 # 使用端口号 8891 启动模型服务
 python rest_api/application.py 8891
 ```
-Linux 用户推荐采用 Shell 脚本来启动服务：：
+Linux 用户推荐采用 Shell 脚本来启动服务：
 
 ```bash
 sh examples/semantic-search/run_search_server.sh
@@ -149,14 +163,20 @@ sh examples/semantic-search/run_search_server.sh
 ```
 curl -X POST -k http://localhost:8891/query -H 'Content-Type: application/json' -d '{"query": "衡量酒水的价格的因素有哪些?","params": {"Retriever": {"top_k": 5}, "Ranker":{"top_k": 5}}}'
 ```
+
+更多API接口文档及其调用方式请参考链接[http://127.0.0.1:8891/docs](http://127.0.0.1:8891/docs)
+
 #### 3.4.4 启动 WebUI
+
+
 ```bash
+pip install streamlit==1.11.1
 # 配置模型服务地址
 export API_ENDPOINT=http://127.0.0.1:8891
 # 在指定端口 8502 启动 WebUI
 python -m streamlit run ui/webapp_semantic_search.py --server.port 8502
 ```
-Linux 用户推荐采用 Shell 脚本来启动服务：：
+Linux 用户推荐采用 Shell 脚本来启动服务：
 
 ```bash
 sh examples/semantic-search/run_search_web.sh

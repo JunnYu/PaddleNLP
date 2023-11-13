@@ -12,7 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .batch_sampler import *
-from .import_utils import install_package, uninstall_package
+import contextlib
 
-CONFIG_NAME = 'model_config.json'
+import paddle
+
+from .batch_sampler import *
+from .env import CONFIG_NAME, GENERATION_CONFIG_NAME, LEGACY_CONFIG_NAME
+from .import_utils import install_package, uninstall_package
+from .initializer import to
+from .quantization_config import QuantizationConfig
+from .serialization import load_torch
+
+# hack impl for EagerParamBase to function
+# https://github.com/PaddlePaddle/Paddle/blob/fa44ea5cf2988cd28605aedfb5f2002a63018df7/python/paddle/nn/layer/layers.py#L2077
+paddle.framework.io.EagerParamBase.to = to
+
+
+@contextlib.contextmanager
+def device_guard(device="cpu", dev_id=0):
+    origin_device = paddle.device.get_device()
+    if device == "cpu":
+        paddle.set_device(device)
+    elif device in ["gpu", "xpu", "npu"]:
+        paddle.set_device("{}:{}".format(device, dev_id))
+    try:
+        yield
+    finally:
+        paddle.set_device(origin_device)

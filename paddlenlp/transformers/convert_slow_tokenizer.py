@@ -15,15 +15,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Dict, List, Tuple
-
-from faster_tokenizer import Tokenizer, normalizers, pretokenizers, postprocessors, decoders
-from faster_tokenizer.models import WordPiece, FasterWordPiece, BPE, Unigram
+from fast_tokenizer import (
+    Tokenizer,
+    decoders,
+    normalizers,
+    postprocessors,
+    pretokenizers,
+)
+from fast_tokenizer.models import BPE, FastWordPiece, Unigram
 
 
 # Extract the vocab and merge file from sentencepiece file
 class SentencePieceExtractor:
-
     def __init__(self, model: str):
         from sentencepiece import SentencePieceProcessor
 
@@ -32,10 +35,7 @@ class SentencePieceExtractor:
 
     def extract(self):
         sp = self.sp
-        vocab = {
-            sp.id_to_piece(index): index
-            for index in range(sp.GetPieceSize())
-        }
+        vocab = {sp.id_to_piece(index): index for index in range(sp.GetPieceSize())}
 
         # Merges
         merges = []
@@ -56,7 +56,6 @@ def check_number_comma(piece: str) -> bool:
 
 
 class Converter:
-
     def __init__(self, original_tokenizer):
         self.original_tokenizer = original_tokenizer
 
@@ -65,13 +64,13 @@ class Converter:
 
 
 class BertConverter(Converter):
-
     def converted(self) -> Tokenizer:
         vocab = self.original_tokenizer.vocab
         tokenizer = Tokenizer(
-            FasterWordPiece(vocab._token_to_idx,
-                            unk_token=str(self.original_tokenizer.unk_token),
-                            with_pretokenization=True))
+            FastWordPiece(
+                vocab._token_to_idx, unk_token=str(self.original_tokenizer.unk_token), with_pretokenization=True
+            )
+        )
 
         tokenize_chinese_chars = True
         strip_accents = True
@@ -85,7 +84,7 @@ class BertConverter(Converter):
             strip_accents=strip_accents,
             lowercase=do_lower_case,
         )
-        # No need to init pretokenizer because FasterWordPiece can pretokenize
+        # No need to init pretokenizer because FastWordPiece can pretokenize
         # tokenizer.pretokenizer = pretokenizers.BertPreTokenizer()
 
         cls_token = str(self.original_tokenizer.cls_token)
@@ -94,7 +93,8 @@ class BertConverter(Converter):
         sep_token_id = self.original_tokenizer.sep_token_id
 
         tokenizer.postprocessor = postprocessors.BertPostProcessor(
-            (str(sep_token), sep_token_id), (str(cls_token), cls_token_id))
+            (str(sep_token), sep_token_id), (str(cls_token), cls_token_id)
+        )
 
         tokenizer.decoder = decoders.WordPiece(prefix="##")
         return tokenizer
@@ -108,12 +108,16 @@ class TinyBertConverter(BertConverter):
     pass
 
 
+class NystromformerConverter(BertConverter):
+    pass
+
+
 # For sentencepiece tokenzier
 class SpmConverter(Converter):
-
     def __init__(self, *args):
         super().__init__(*args)
         from . import sentencepiece_model_pb2 as model_pb2
+
         m = model_pb2.ModelProto()
         # For ernie_m sentencepiece tokenizer
         if hasattr(self.original_tokenizer, "sentencepiece_model_file"):
@@ -131,12 +135,12 @@ class SpmConverter(Converter):
         return proto.trainer_spec.unk_id
 
     def tokenizer(self, proto):
-        model_type = proto.trainer_spec.model_type
+        self.model_type = proto.trainer_spec.model_type
         vocab = self.vocab(proto)
         unk_id = self.unk_id(proto)
-        if model_type == 1:
+        if self.model_type == 1:
             tokenizer = Tokenizer(Unigram(vocab, unk_id))
-        elif model_type == 2:
+        elif self.model_type == 2:
             # Special case for ernie-m
             if hasattr(self.original_tokenizer, "sentencepiece_model_file"):
                 orginal_vocab_file = self.original_tokenizer.sentencepiece_model_file
@@ -150,7 +154,8 @@ class SpmConverter(Converter):
                     merges,
                     unk_token=proto.trainer_spec.unk_piece,
                     fuse_unk=True,
-                ))
+                )
+            )
         else:
             raise Exception(
                 "You're trying to run a `Unigram` model but you're file was trained with a different algorithm"
@@ -161,17 +166,14 @@ class SpmConverter(Converter):
     def normalizer(self, proto):
         precompiled_charsmap = proto.normalizer_spec.precompiled_charsmap
         if not precompiled_charsmap:
-            return normalizers.SequenceNormalizer(
-                [normalizers.ReplaceNormalizer(" {2,}", " ")])
+            return normalizers.SequenceNormalizer([normalizers.ReplaceNormalizer(" {2,}", " ")])
         else:
-            return normalizers.SequenceNormalizer([
-                normalizers.PrecompiledNormalizer(precompiled_charsmap),
-                normalizers.ReplaceNormalizer(" {2,}", " ")
-            ])
+            return normalizers.SequenceNormalizer(
+                [normalizers.PrecompiledNormalizer(precompiled_charsmap), normalizers.ReplaceNormalizer(" {2,}", " ")]
+            )
 
     def pretokenizer(self, replacement, add_prefix_space):
-        return pretokenizers.MetaSpacePreTokenizer(
-            replacement=replacement, add_prefix_space=add_prefix_space)
+        return pretokenizers.MetaSpacePreTokenizer(replacement=replacement, add_prefix_space=add_prefix_space)
 
     def postprocessor(self):
         return None
@@ -194,8 +196,7 @@ class SpmConverter(Converter):
 
         replacement = self.replacement()
         add_prefix_space = self.add_prefix_space()
-        tokenizer.pretokenizer = self.pretokenizer(replacement,
-                                                   add_prefix_space)
+        tokenizer.pretokenizer = self.pretokenizer(replacement, add_prefix_space)
         # tokenizer.decoder = decoders.MetaSpace(replacement=replacement, add_prefix_space=add_prefix_space)
         postprocessor = self.postprocessor()
         if postprocessor:
@@ -205,22 +206,22 @@ class SpmConverter(Converter):
 
 
 class ErnieMConverter(SpmConverter):
-
     def set_model(self, tokenizer):
         SPLICE_UNDERLINE = self.replacement()
-        tokenizer.model.set_filter_token(SPLICE_UNDERLINE)
-        chinese_chars = r"\x{4e00}-\x{9fff}"
-        punc_chars = r",;:.?!~，；：。？！《》【】"
-        digits = r"0-9"
-        tokenizer.model.set_split_rule(
-            fr"[{chinese_chars}]|[{punc_chars}]|[{digits}]+|[^{chinese_chars}{punc_chars}{digits}]+"
-        )
+        if self.model_type == 1:
+            # Unigram
+            tokenizer.model.set_filter_token(SPLICE_UNDERLINE)
+            chinese_chars = r"\x{4e00}-\x{9fff}"
+            punc_chars = r",;:.?!~，；：。？！《》【】"
+            digits = r"0-9"
+            tokenizer.model.set_split_rule(
+                rf"[{chinese_chars}]|[{punc_chars}]|[{digits}]+|[^{chinese_chars}{punc_chars}{digits}]+"
+            )
 
     def normalizer(self, proto):
         list_normalizers = []
         precompiled_charsmap = proto.normalizer_spec.precompiled_charsmap
-        list_normalizers.append(
-            normalizers.PrecompiledNormalizer(precompiled_charsmap))
+        list_normalizers.append(normalizers.PrecompiledNormalizer(precompiled_charsmap))
         return normalizers.SequenceNormalizer(list_normalizers)
 
     def vocab(self, proto):
@@ -238,30 +239,28 @@ class ErnieMConverter(SpmConverter):
         return vocab_list
 
     def unk_id(self, proto):
-        return self.original_tokenizer.convert_tokens_to_ids(
-            str(self.original_tokenizer.unk_token))
+        return self.original_tokenizer.convert_tokens_to_ids(str(self.original_tokenizer.unk_token))
 
     def pretokenizer(self, replacement, add_prefix_space):
-        return pretokenizers.SequencePreTokenizer([
-            pretokenizers.WhitespacePreTokenizer(),
-            pretokenizers.MetaSpacePreTokenizer(
-                replacement=replacement, add_prefix_space=add_prefix_space)
-        ])
+        return pretokenizers.SequencePreTokenizer(
+            [
+                pretokenizers.WhitespacePreTokenizer(),
+                pretokenizers.MetaSpacePreTokenizer(replacement=replacement, add_prefix_space=add_prefix_space),
+            ]
+        )
 
     def postprocessor(self):
-        '''
+        """
          An ERNIE-M sequence has the following format:
         - single sequence:       ``[CLS] X [SEP]``
         - pair of sequences:        ``[CLS] A [SEP] [SEP] B [SEP]``
-        '''
+        """
         return postprocessors.TemplatePostProcessor(
             single="[CLS]:0 $A:0 [SEP]:0",
             pair="[CLS]:0 $A:0 [SEP]:0 [SEP]:1 $B:1 [SEP]:1",
             special_tokens=[
-                ("[CLS]",
-                 self.original_tokenizer.convert_tokens_to_ids("[CLS]")),
-                ("[SEP]",
-                 self.original_tokenizer.convert_tokens_to_ids("[SEP]")),
+                ("[CLS]", self.original_tokenizer.convert_tokens_to_ids("[CLS]")),
+                ("[SEP]", self.original_tokenizer.convert_tokens_to_ids("[SEP]")),
             ],
         )
 
@@ -270,7 +269,8 @@ SLOW_TO_FAST_CONVERTERS = {
     "BertTokenizer": BertConverter,
     "ErnieTokenizer": ErnieConverter,
     "TinyBertTokenizer": TinyBertConverter,
-    "ErnieMTokenizer": ErnieMConverter
+    "ErnieMTokenizer": ErnieMConverter,
+    "NystromformerTokenizer": NystromformerConverter
     # TODO(zhoushunjie): Need to implement more TokenizerConverter
 }
 
@@ -282,11 +282,11 @@ def convert_slow_tokenizer(transformer_tokenizer) -> Tokenizer:
     Args:
         transformer_tokenizer ([`~tokenizer_utils_base.PretrainedTokenizer`]):
             Instance of a slow tokenizer to convert in the backend tokenizer for
-            [`~tokenizer_utils_base.PretrainedFasterTokenizer`].
+            [`~tokenizer_utils_base.PretrainedFastTokenizer`].
 
     Return:
         A instance of [`~tokenizers.Tokenizer`] to be used as the backend tokenizer of a
-        [`~tokenizer_utils_base.PretrainedFasterTokenizer`]
+        [`~tokenizer_utils_base.PretrainedFastTokenizer`]
     """
 
     tokenizer_class_name = transformer_tokenizer.__class__.__name__

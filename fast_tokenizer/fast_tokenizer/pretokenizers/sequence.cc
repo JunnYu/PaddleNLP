@@ -13,6 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License. */
 
 #include "fast_tokenizer/pretokenizers/pretokenizers.h"
+#include "glog/logging.h"
+#include "re2/re2.h"
 
 namespace paddlenlp {
 namespace fast_tokenizer {
@@ -43,6 +45,21 @@ void SequencePreTokenizer::AppendPreTokenizer(PreTokenizer* pretokenizer) {
         dynamic_cast<WhitespacePreTokenizer*>(pretokenizer);
     pretokenizer_ptr =
         std::make_shared<WhitespacePreTokenizer>(*cast_pretokenizer);
+  } else if (typeid(*pretokenizer) ==
+             typeid(WhitespaceAndPunctuationPreTokenizer)) {
+    auto cast_pretokenizer =
+        dynamic_cast<WhitespaceAndPunctuationPreTokenizer*>(pretokenizer);
+    pretokenizer_ptr = std::make_shared<WhitespaceAndPunctuationPreTokenizer>(
+        *cast_pretokenizer);
+  } else if (typeid(*pretokenizer) == typeid(SplitPreTokenizer)) {
+    auto cast_pretokenizer = dynamic_cast<SplitPreTokenizer*>(pretokenizer);
+    pretokenizer_ptr = std::make_shared<SplitPreTokenizer>(*cast_pretokenizer);
+  } else if (typeid(*pretokenizer) == typeid(ByteLevelPreTokenizer)) {
+    auto cast_pretokenizer = dynamic_cast<ByteLevelPreTokenizer*>(pretokenizer);
+    pretokenizer_ptr =
+        std::make_shared<ByteLevelPreTokenizer>(*cast_pretokenizer);
+  } else {
+    VLOG(6) << "This pretokenizer is not supportted now.";
   }
   pretokenzer_ptrs_.push_back(pretokenizer_ptr);
 }
@@ -66,6 +83,12 @@ void to_json(nlohmann::json& j,
       jitem = *dynamic_cast<MetaSpacePreTokenizer*>(ptr.get());
     } else if (typeid(*ptr) == typeid(WhitespacePreTokenizer)) {
       jitem = *dynamic_cast<WhitespacePreTokenizer*>(ptr.get());
+    } else if (typeid(*ptr) == typeid(WhitespaceAndPunctuationPreTokenizer)) {
+      jitem = *dynamic_cast<WhitespaceAndPunctuationPreTokenizer*>(ptr.get());
+    } else if (typeid(*ptr) == typeid(SplitPreTokenizer)) {
+      jitem = *dynamic_cast<SplitPreTokenizer*>(ptr.get());
+    } else if (typeid(*ptr) == typeid(ByteLevelPreTokenizer)) {
+      jitem = *dynamic_cast<ByteLevelPreTokenizer*>(ptr.get());
     }
     jlist.push_back(jitem);
   }
@@ -85,8 +108,11 @@ void from_json(const nlohmann::json& j,
     pretokenizer_json.at("type").get_to(pretokenizer_type);
     TRY_APPEND_PRETOKENIZER(SequencePreTokenizer);
     TRY_APPEND_PRETOKENIZER(WhitespacePreTokenizer);
+    TRY_APPEND_PRETOKENIZER(WhitespaceAndPunctuationPreTokenizer);
     TRY_APPEND_PRETOKENIZER(MetaSpacePreTokenizer);
     TRY_APPEND_PRETOKENIZER(BertPreTokenizer);
+    TRY_APPEND_PRETOKENIZER(ByteLevelPreTokenizer);
+    TRY_APPEND_PRETOKENIZER(SplitPreTokenizer);
   }
 #undef TRY_APPEND_PRETOKENIZER
 }

@@ -73,7 +73,8 @@ Learnt by ERNIE：[mask] [mask] [mask] 是黑龙江的省会，国际 [mask] [ma
 ├── pretraining_introduction.md 中文预训练详细介绍文档
 ├── preprocess
 │   ├── docs                部分数据制作文档，包括CLUECorpusSmall，WuDaoCorpusBase
-│   └── xxx.py              文件处理的python脚本。
+│   ├─ xxx.py              文件处理的python脚本
+│   └──README.md            PaddleNLP 预训练数据流程
 ├── vocab                   全中文字符词表制作教程
 ├── run_gb512_s1m.sh        训练启动shell脚本，batch size 512. max steps 100w
 ├── run_gb512_s1m_static.sh
@@ -116,7 +117,7 @@ ERNIE 中文预训练更详细的介绍文档请可以参见[ERNIE 中文预训�
 <summary><b>CLUECorpusSmall 数据准备</b></summary>
 
 #### 数据准备
-数据下载部分请参考[data_tools](./data_tools)目录，根据文档中`CLUECorpusSmall 数据集处理教程`，下载数据。下载好后:
+数据下载部分请参考[preprocess](./preprocess)目录，根据文档中`CLUECorpusSmall 数据集处理教程`，下载数据。下载好后:
 
 解压文件
 ```shell
@@ -127,15 +128,16 @@ unzip wiki2019zh_corpus.zip    -d  clue_corpus_small_14g/wiki2019zh_corpus
 ```
 将txt文件转换为jsonl格式
 ```
-python data_tools/trans_to_json.py  --input_path ./clue_corpus_small_14g --output_path clue_corpus_small_14g.jsonl
+python preprocess/trans_to_json.py  --input_path ./clue_corpus_small_14g --output_path clue_corpus_small_14g.jsonl
 ```
 现在我们得到了jsonl格式的数据集，下面是针对训练任务的数据集应用，此处以ernie为例。
 ```
-python -u  data_tools/create_pretraining_data.py \
+python -u  preprocess/create_pretraining_data.py \
     --model_name ernie-1.0-base-zh \
     --tokenizer_name ErnieTokenizer \
     --input_path clue_corpus_small_14g.jsonl \
-    --split_sentences\
+    --split_sentences \
+    --data_impl mmap \
     --chinese \
     --cn_whole_word_segment \
     --cn_seg_func jieba \
@@ -145,8 +147,8 @@ python -u  data_tools/create_pretraining_data.py \
 ```
 数据共有文档`15702702`条左右，由于分词比较耗时，大概一小时左右可以完成。在当前目录下产出训练所需数据。
 ```
-clue_corpus_small_14g_20220104_ids.npy
-clue_corpus_small_14g_20220104_idx.npz
+clue_corpus_small_14g_20220104.bin
+clue_corpus_small_14g_20220104.idx
 ```
 
 </details>
@@ -158,7 +160,7 @@ clue_corpus_small_14g_20220104_idx.npz
 
 ####  开始训练
 
-将制作好的数据`clue_corpus_small_14g_20220104_ids.npy,clue_corpus_small_14g_20220104_idx.npz`移动到input_dir中，即可开始训练。
+将制作好的数据`clue_corpus_small_14g_20220104.bin,clue_corpus_small_14g_20220104.idx`移动到input_dir中，即可开始训练。
 这里以8卡GPU训练为例任务脚本为例：
 ```
 python -u  -m paddle.distributed.launch \
@@ -169,6 +171,7 @@ python -u  -m paddle.distributed.launch \
     --model_name_or_path "ernie-1.0-base-zh" \
     --tokenizer_name_or_path "ernie-1.0-base-zh" \
     --input_dir "./data" \
+    --data_impl "mmap" \
     --output_dir "output/ernie-1.0-dp8-gb512" \
     --split 949,50,1 \
     --max_seq_len 512 \
@@ -201,6 +204,7 @@ python -u  -m paddle.distributed.launch \
     --model_name_or_path "ernie-1.0-base-zh" \
     --tokenizer_name_or_path "ernie-1.0-base-zh" \
     --input_dir "./data" \
+    --data_impl "mmap" \
     --output_dir "output/ernie-1.0-dp8-gb512" \
     --split 949,50,1 \
     --max_seq_len 512 \
@@ -228,6 +232,7 @@ python -u  -m paddle.distributed.launch \
 - `tokenizer_name_or_path` 模型词表文件所在的文件夹，或者PaddleNLP内置tokenizer的名字。
 - `continue_training` 默认false，模型从随机初始化，开始训练。如果为True，从已有的预训练权重加载，开始训练。如果为True， 训练初始loss 为2.x 是正常loss，如果未False，随机初始化，初始loss一般为10+。
 - `input_dir` 指定输入文件，可以使用目录，指定目录时将包括目录中的所有文件。
+- `data_impl` 指定输入文件数据制作类型，默认为`mmap`，可指定`mmap`或`lazy`，`mmap`格式在读入数据时会建立内存映射，`lazy`格式在读入数据时直接从文件读取。
 - `output_dir` 指定输出文件。
 - `split` 划分数据集为train、valid、test的比例。整个数据集会按照这个比例划分数据。默认1/1000的数据为test，当样本数太少时，请修改此比例。
 - `max_seq_len` 输入文本序列的长度。
@@ -367,6 +372,12 @@ wget https://bj.bcebos.com/paddlenlp/models/transformers/data_tools/wudao_200g_s
 wget https://bj.bcebos.com/paddlenlp/models/transformers/data_tools/wudao_200g_sample_ernie-3.0-base-zh_idx.npz
 cd -
 ```
+同时我们也提供了 `ernie-1.0-base-zh` 的悟道一个小规模样本的数据：
+```
+https://paddlenlp.bj.bcebos.com/models/transformers/data_tools/wudao_200g_sample_ernie-1.0-base-zh_ids.npy
+https://paddlenlp.bj.bcebos.com/models/transformers/data_tools/wudao_200g_sample_ernie-1.0-base-zh_idx.npz
+```
+
 可以指定`tokenizer_name_or_path=ernie-3.0-bash-zh`,`input_dir=./data` 用下面的脚本训练。
 
 这里启动的是单机8卡任务，整体全局的batch_size 512 (64*8)。如果指定ips参数，进行多机运行，如 `python3 -u  -m paddle.distributed.launch  --gpus "0,1,2,3,4,5,6,7" --ips 192.168.1.101,192.168.1.101 `
@@ -507,7 +518,7 @@ python3 -u  -m paddle.distributed.launch \
         - 对模型结构，配置参数，paddle版本信息进行记录，方便复现环境
     - **下游任务评估**：CLUE Benchmark搜索评估参数效果
         - 使用[批量启动-grid-search](https://github.com/PaddlePaddle/PaddleNLP/tree/develop/examples/benchmark/clue#%E6%89%B9%E9%87%8F%E5%90%AF%E5%8A%A8-grid-search)，可以进行批量搜索任务
-        - 注意，这里使用的是训练中的checkpoint进行评估，可以直接试着 评估待评估的参数为，所在的路径地址，即如 `python grid_seach.py ouput/ernie-base-outdir/model_100000` 之类的checkpoint地址。
+        - 注意，这里使用的是训练中的checkpoint进行评估，可以直接试着 评估待评估的参数为，所在的路径地址，即如 `python grid_seach.py output/ernie-base-outdir/model_100000` 之类的checkpoint地址。
 
 详细介绍请参见[ERNIE 中文预训练介绍](./pretraining_introduction.md)。
 
@@ -617,7 +628,7 @@ python run_qa.py \
 
 ```shell
 cd finetune
-# 开始finetune训练
+# 开始finetune训练并导出模型
 dataset="chnsenticorp_v2"
 python run_seq_cls.py \
     --do_train \
@@ -632,17 +643,27 @@ python run_seq_cls.py \
     --metric_for_best_model "eval_accuracy" \
     --load_best_model_at_end \
     --save_total_limit 3 \
-# 预测结果
-python deploy/predict_chnsenticorp.py --model_dir=./tmp/chnsenticorp_v2/export
+
 ```
-训练完，导出模型之后，可以用于部署，`deploy/predict_chnsenticorp.py`文件提供了python部署预测示例。
+训练完导出模型之后，可以用于部署，`deploy/seq_cls_infer.py`文件提供了python部署预测示例。可执行以下命令运行部署示例：
+
+```shell
+python deploy/seq_cls_infer.py --model_dir tmp/chnsenticorp_v2/export/ --device cpu --backend paddle
+```
+
 运行后预测结果打印如下：
 ```text
-Data: 东西不错，不过有人不太喜欢镜面的，我个人比较喜欢，总之还算满意。   Label: positive
-Data: 房间不错,只是上网速度慢得无法忍受,打开一个网页要等半小时,连邮件都无法收。另前台工作人员服务态度是很好，只是效率有得改善。          Label: positive
-Data: 挺失望的,还不如买一本张爱玲文集呢,以<色戒>命名,可这篇文章仅仅10多页,且无头无尾的,完全比不上里面的任意一篇其它文章.         Label: negative
+[2023-03-01 08:25:31,352] [    INFO] - We are using <class 'paddlenlp.transformers.ernie.fast_tokenizer.ErnieFastTokenizer'> to load '../tmp/chnsenticorp_v2/export/'.
+WARNING: Logging before InitGoogleLogging() is written to STDERR
+W0301 08:25:37.617117 58742 analysis_config.cc:958] It is detected that mkldnn and memory_optimize_pass are enabled at the same time, but they are not supported yet. Currently, memory_optimize_pass is explicitly disabled
+[INFO] fastdeploy/runtime/runtime.cc(266)::CreatePaddleBackend    Runtime initialized with Backend::PDINFER in Device::CPU.
+Batch id: 0, example id: 0, sentence: 这个宾馆比较陈旧了，特价的房间也很一般。总体来说一般, label: negative, negative prob: 0.9999, positive prob: 0.0001.
+Batch id: 1, example id: 0, sentence: 怀着十分激动的心情放映，可是看着看着发现，在放映完毕后，出现一集米老鼠的动画片！开始还怀疑是不是赠送的个别现象，可是后来发现每张DVD后面都有！真不知道生产商怎么想的，我想看的是猫和老鼠，不是米老鼠！如果厂家是想赠送的话，那就全套米老鼠和唐老鸭都赠送，只在每张DVD后面添加一集算什么？？简直是画蛇添足！！, label: negative, negative prob: 0.9998, positive prob: 0.0002.
+Batch id: 2, example id: 0, sentence: 还稍微重了点，可能是硬盘大的原故，还要再轻半斤就好了。其他要进一步验证。贴的几种膜气泡较多，用不了多久就要更换了，屏幕膜稍好点，但比没有要强多了。建议配赠几张膜让用用户自己贴。, label: negative, negative prob: 0.9999, positive prob: 0.0001.
+......
 ```
-更多关于部署的情况可以参考[此处](https://github.com/PaddlePaddle/PaddleNLP/tree/develop/examples/text_classification/pretrained_models#%E6%A8%A1%E5%9E%8B%E9%A2%84%E6%B5%8B)。
+
+更多关于部署的情况可以参考[ERNIE 1.0 模型 Python 部署示例](finetune/deploy/README.md)。
 
 <a name="参考文献"></a>
 

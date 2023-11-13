@@ -48,30 +48,21 @@ python3 -m pip install paddlepaddle-gpu paddlenlp -i https://mirror.baidu.com/py
 3. 更多关于PaddleNLP安装的详细教程请查看[Installation](https://github.com/PaddlePaddle/PaddleNLP/blob/develop/docs/get_started/installation.rst)。
 
 
-### 安装FasterTokenizers文本处理加速库（可选）
+### 安装FastTokenizer文本处理加速库（可选）
 
-部署环境是Linux，推荐安装faster_tokenizers可以得到更极致的文本处理效率，进一步提升服务性能。
+部署环境是Linux，推荐安装fast_tokenizer可以得到更极致的文本处理效率，进一步提升服务性能。
 
-在容器内安装 faster_tokenizers
+在容器内安装 fast_tokenizer
 ```shell
-python3 -m pip install faster_tokenizers
+python3 -m pip install fast-tokenizer-python
 ```
 
 
 ## 模型获取和转换
 
-使用Triton做服务化部署时，选择ONNX Runtime后端运行需要先将模型转换成ONNX格式。
-
-
-首先将保存的动态图参数导出成静态图参数，具体代码见[静态图导出脚本](../../export_model.py)，静态图参数保存在`output_path`指定路径中，裁剪API裁剪会自动保存静态图模型。运行方式：
-
+使用Triton做服务化部署时，选择ONNX Runtime后端运行需要先将模型转换成ONNX格式。使用Paddle2ONNX将Paddle静态图模型转换为ONNX模型格式的命令如下，以下命令成功运行后，将会在当前目录下生成model.onnx模型文件。
 ```shell
-python ../../export_model.py --params_path=../../checkpoint/model_state.pdparams --output_path=./infer_model
-```
-
-使用Paddle2ONNX将Paddle静态图模型转换为ONNX模型格式的命令如下，以下命令成功运行后，将会在当前目录下生成model.onnx模型文件。
-```shell
-paddle2onnx --model_dir infer_model/ --model_filename float32.pdmodel --params_filename float32.pdiparams --save_file model.onnx --opset_version 13 --enable_onnx_checker True --enable_dev_version True
+paddle2onnx --model_dir ../../checkpoint/export --model_filename model.pdmodel --params_filename model.pdiparams --save_file model.onnx --opset_version 13 --enable_onnx_checker True --enable_dev_version True
 ```
 创建空白目录/seqcls/1和seqcls_model/1，并将将转换好的ONNX模型移动到模型仓库目录
 ```shell
@@ -102,7 +93,7 @@ models
     └── config.pbtxt
 ```
 
-模型配置文件config.pbtxt配置细节请参见[Triton Server Model Configuration](https://github.com/triton-inference-server/server/blob/main/docs/model_configuration.md)
+模型配置文件config.pbtxt配置细节请参见[Triton Server Model Configuration](https://github.com/triton-inference-server/server/blob/main/docs/user_guide/model_configuration.md)
 
 ## 部署模型
 
@@ -162,7 +153,7 @@ I0619 13:43:33.409775 5127 http_server.cc:167] Started Metrics Service at 0.0.0.
 ## 客户端请求
 
 ### 客户端环境准备
-客户端请求有两种方式，可以选择在在本地执行脚本请求，或下载官方客户端镜像在容器中执行。
+客户端请求有两种方式，可以选择在本地执行脚本请求，或下载官方客户端镜像在容器中执行。
 
 方式一：本地执行脚本，需要先安装依赖:
 ```shell

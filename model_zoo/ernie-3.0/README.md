@@ -4,7 +4,11 @@
    * [模型介绍](#模型介绍)
        * [在线蒸馏技术](#在线蒸馏技术)
    * [模型效果](#模型效果)
-   * [微调](#微调)
+   * [开始运行](#开始运行)
+       * [环境要求](#环境要求)
+       * [数据准备](#数据准备)
+   * [模型训练](#模型训练)
+   * [模型预测](#模型预测)
    * [模型压缩](#模型压缩)
        * [环境依赖](#环境依赖)
        * [模型压缩 API 使用](#模型压缩API使用)
@@ -13,11 +17,12 @@
            * [性能测试](#性能测试)
                * [CPU 性能](#CPU性能)
                * [GPU 性能](#CPU性能)
-   * [使用 FasterTokenizer 加速](#使用FasterTokenizer加速)
+   * [使用 FastTokenizer 加速](#使用FastTokenizer加速)
    * [部署](#部署)
-       * [Python 部署](#Python部署)
+       * [FastDeploy 部署](#FastDeploy部署)
+           * [Python 部署](#Python部署)
+           * [C++ 部署](#C++部署)
        * [服务化部署](#服务化部署)
-       * [Paddle2ONNX 部署](#Paddle2ONNX部署)
    * [Notebook教程](#Notebook教程)
    * [参考文献](#参考文献)
 
@@ -25,11 +30,9 @@
 
 ## 模型介绍
 
-本次开源的模型是在文心大模型ERNIE 3.0 基础上通过**在线蒸馏技术**得到的轻量级模型，模型结构与 ERNIE 2.0 保持一致，相比 ERNIE 2.0 具有更强的中文效果。
+本次开源的模型是文心大模型 ERNIE 3.0, 文心大模型 ERNIE 3.0 作为百亿参数知识增强的大模型，除了从海量文本数据中学习词汇、结构、语义等知识外，还从大规模知识图谱中学习。 基础上通过**在线蒸馏技术**得到的轻量级模型，模型结构与 ERNIE 2.0 保持一致，相比 ERNIE 2.0 具有更强的中文效果。
 
 相关技术详解可参考文章[《解析全球最大中文单体模型鹏城-百度·文心技术细节》](https://www.jiqizhixin.com/articles/2021-12-08-9)
-
-<a name="在线蒸馏技术"></a>
 
 ### 在线蒸馏技术
 
@@ -47,7 +50,8 @@
 
 <a name="模型效果"></a>
 
-## 模型效果
+
+### 模型效果
 
 本项目开源 **ERNIE 3.0 _Base_** 、**ERNIE 3.0 _Medium_** 、 **ERNIE 3.0 _Mini_** 、 **ERNIE 3.0 _Micro_** 、 **ERNIE 3.0 _Nano_** 五个模型：
 
@@ -1277,9 +1281,12 @@ batch_size=32 和 1，预测精度为 FP16 时，GPU 下的效果-时延图：
 <br />
 
 
-以下是本项目目录结构及说明：
+<a name="代码结构"></a>
 
-```shell
+## 代码结构
+以下是本项目代码结构
+
+```text
 .
 ├── run_seq_cls.py               # 分类任务的微调脚本
 ├── run_token_cls.py             # 序列标注任务的微调脚本
@@ -1287,35 +1294,57 @@ batch_size=32 和 1，预测精度为 FP16 时，GPU 下的效果-时延图：
 ├── compress_seq_cls.py          # 分类任务的压缩脚本
 ├── compress_token_cls.py        # 序列标注任务的压缩脚本
 ├── compress_qa.py               # 阅读理解任务的压缩脚本
-├── config.yml                   # 压缩配置文件
-├── infer.py                     # 支持 CLUE 分类、CLUE CMRC2018、MSRA_NER 任务的预测脚本
+├── utils.py                     # 训练工具脚本
+├── configs                      # 压缩配置文件夹
+│ └── default.yml                # 默认配置文件
 ├── deploy                       # 部署目录
-│ └── python
-│   └── ernie_predictor.py
+│ └── predictor                  # onnx离线部署
 │   └── infer_cpu.py
 │   └── infer_gpu.py
 │   └── README.md
-│ └── serving
-│   └── seq_cls_rpc_client.py
-│   └── seq_cls_service.py
-│   └── seq_cls_config.yml
-│   └── token_cls_rpc_client.py
-│   └── token_cls_service.py
-│   └── token_cls_config.yml
+│   └── requirements_cpu.txt
+│   └── requirements_gpu.txt
+│ └── simple_serving            # 基于PaddleNLP SimpleServing 服务化部署
+│   └── client_qa.py
+│   └── client_seq_cls.py
+│   └── client_token_cls.py
 │   └── README.md
-│ └── paddle2onnx
-│   └── ernie_predictor.py
-│   └── infer.py
+│   └── server_qa.py
+│   └── server_seq_cls.py
+│   └── server_token_cls.py
+│ └── triton_serving           # 基于Triton Serving 服务化部署
+│   └── models
 │   └── README.md
-└── README.md                    # 文档，本文件
+│   └── seq_cls_grpc_client.py
+│   └── token_cls_grpc_client.py
+└── README.md                    # 文档
 
 ```
 
-<a name="微调"></a>
 
-## 微调
+<a name="开始运行"></a>
+## 开始运行
+下面提供以 CLUE 数据集进行模型微调相关训练、预测、部署的代码, CLUE 数据集是中文语言理解测评基准数据集，包括了文本分类、文本推理、实体抽取、问答等相关数据集。
 
-ERNIE 3.0 发布的预训练模型还不能直接在下游任务上直接使用，需要使用具体任务上的数据对预训练模型进行微调。
+### 环境要求
+- python >= 3.7
+- paddlepaddle >= 2.3
+- paddlenlp >= 2.4
+- paddleslim >= 2.4
+
+### 数据准备
+此次微调数据主要是以 CLUE benchmark 数据集为主, CLUE benchmark 包括了文本分类、实体抽取、问答三大类数据集，而 CLUE benchmark 数据目前已经集成在 PaddleNLP 的 datasets 里面，可以通过下面的方式来使用数据集
+
+```python
+from paddlenlp.datasets import load_dataset
+
+# Load the clue Tnews dataset
+train_ds, test_ds = load_dataset('clue', 'tnews', splits=('train', 'test'))
+
+```
+
+<a name="模型训练"></a>
+## 模型训练
 
 使用 PaddleNLP 只需要一行代码可以拿到 ERNIE 3.0 系列模型，之后可以在自己的下游数据下进行微调，从而获得具体任务上效果更好的模型。
 
@@ -1341,32 +1370,32 @@ qa_model = AutoModelForQuestionAnswering.from_pretrained("ernie-3.0-medium-zh")
 ```shell
 # 分类任务
 # 该脚本共支持 CLUE 中 7 个分类任务，超参不全相同，因此分类任务中的超参配置利用 config.yml 配置
-python run_seq_cls.py  \
-    --task_name tnews \
-    --model_name_or_path ernie-3.0-medium-zh \
-    --do_train
+# --device 选择训练模型的硬件，可选 cpu/gpu/xpu/npu，默认为 gpu。xpu 为昆仑芯片，npu 为昇腾芯片。
+python run_seq_cls.py  --model_name_or_path ernie-3.0-medium-zh  --dataset afqmc --output_dir ./best_models --export_model_dir best_models/ --do_train --do_eval --do_export --config=configs/default.yml
 
 # 序列标注任务
-python run_token_cls.py \
-    --task_name msra_ner  \
-    --model_name_or_path ernie-3.0-medium-zh \
-    --do_train \
-    --num_train_epochs 3 \
-    --learning_rate 0.00005 \
-    --save_steps 100 \
-    --batch_size 32 \
-    --max_seq_length 128 \
-    --remove_unused_columns False
+python run_token_cls.py --model_name_or_path ernie-3.0-medium-zh --dataset msra_ner --output_dir ./best_models --export_model_dir best_models/ --do_train --do_eval --do_export --config=configs/default.yml
 
 # 阅读理解任务
-python run_qa.py \
-    --model_name_or_path ernie-3.0-medium-zh \
-    --do_train \
-    --learning_rate 0.00003 \
-    --num_train_epochs 8 \
-    --batch_size 24 \
-    --max_seq_length 512
+python run_qa.py --model_name_or_path ernie-3.0-medium-zh --dataset cmrc2018  --output_dir ./best_models --export_model_dir best_models/ --do_train --do_eval --do_export --config=configs/default.yml
 ```
+
+<a name="模型预测"></a>
+## 模型预测
+
+```shell
+# 分类任务
+# 该脚本共支持 CLUE 中 7 个分类任务，超参不全相同，因此分类任务中的超参配置利用 config.yml 配置
+# --device 选择训练模型的硬件，可选 cpu/gpu/xpu/npu，默认为 gpu。xpu 为昆仑芯片，npu 为昇腾芯片。
+python run_seq_cls.py  --model_name_or_path best_models/afqmc/  --dataset afqmc --output_dir ./best_models --do_predict --config=configs/default.yml
+
+# 序列标注任务
+python run_token_cls.py  --model_name_or_path best_models/msra_ner/  --dataset msra_ner --output_dir ./best_models --do_predict --config=configs/default.yml
+
+# 阅读理解任务
+python run_qa.py --model_name_or_path best_models/cmrc2018/ --dataset cmrc2018  --output_dir ./best_models --do_predict --config=configs/default.yml
+```
+
 
 <a name="模型压缩"></a>
 
@@ -1405,72 +1434,22 @@ trainer = Trainer(
 trainer.compress()
 
 ```
-使用压缩 API 基于 Trainer 需要先初始化一个 Trainer 实例，然后调用 `compress()` 启动压缩。
-
-假设上述代码位于脚本 compress.py 中，可这样调用：
-
-```shell
-python compress.py \
-    --dataset   "clue cluewsc2020"   \
-    --model_name_or_path best_models/CLUEWSC2020 \
-    --output_dir ./compress_models  \
-    --per_device_train_batch_size 32 \
-    --per_device_eval_batch_size 32 \
-    --width_mult_list 0.75 \
-    --batch_size_list 4 8 16 \
-    --batch_num_list 1 \
-```
-
-可以通过传入命令行参数来控制模型压缩的一些超参数，压缩 API 可以传入的超参数可参考[文档](../../docs/compression.md)。
+压缩 API 可以传入的超参数可参考[文档](../../docs/compression.md)。
 
 本项目提供了压缩 API 在分类（包含文本分类、文本匹配、自然语言推理、代词消歧等任务）、序列标注、阅读理解三大场景下的使用样例，可以分别参考 `compress_seq_cls.py` 、`compress_token_cls.py`、`compress_qa.py`，启动方式如下：
 
 ```shell
 # 分类任务
-# 该脚本共支持 CLUE 中 7 个分类任务，超参不全相同，因此分类任务中的超参配置利用 config.yml 配置
-python compress_seq_cls.py \
-    --dataset "clue tnews"  \
-    --model_name_or_path best_models/TNEWS  \
-    --output_dir ./
+# 该脚本共支持 CLUE 中 7 个分类任务，超参不全相同，因此分类任务中的超参配置利用 configs/defalut.yml 配置
+python compress_seq_cls.py  --model_name_or_path best_models/afqmc/  --dataset afqmc --output_dir ./best_models/afqmc --config=configs/default.yml
 
 # 序列标注任务
-python compress_token_cls.py \
-    --dataset "msra_ner"  \
-    --model_name_or_path best_models/MSRA_NER \
-    --output_dir ./ \
-    --max_seq_length 128 \
-    --per_device_train_batch_size 32 \
-    --per_device_eval_batch_size 32 \
-    --learning_rate 0.00005 \
-    --remove_unused_columns False \
-    --num_train_epochs 3
+python compress_token_cls.py  --model_name_or_path best_models/msra_ner/  --dataset msra_ner --output_dir ./best_models/msra_ner --config=configs/default.yml
 
 # 阅读理解任务
-python compress_qa.py \
-    --dataset "clue cmrc2018" \
-    --model_name_or_path best_models/CMRC2018  \
-    --output_dir ./ \
-    --max_answer_length 50 \
-    --max_seq_length 512 \
-    --learning_rate 0.00003 \
-    --num_train_epochs 8 \
-    --per_device_train_batch_size 24 \
-    --per_device_eval_batch_size 24 \
+python compress_qa.py --model_name_or_path best_models/cmrc2018/ --dataset cmrc2018  --output_dir ./best_models/cmrc2018 --config=configs/default.yml
 
 ```
-
-一行代码验证上面模型压缩后模型的精度：
-
-```shell
-# 原模型
-python infer.py --task_name tnews --model_path best_models/TNEWS/compress/inference/infer --use_trt
-# 裁剪后
-python infer.py --task_name tnews --model_path best_models/TNEWS/compress/0.75/float --use_trt
-# 量化后
-python infer.py --task_name tnews --model_path best_models/TNEWS/compress/0.75/hist16/int8 --use_trt --precision int8
-
-```
-其中 --model_path 参数需要传入静态图模型的路径和前缀名。
 
 
 <a name="压缩效果"></a>
@@ -1549,13 +1528,13 @@ python infer.py --task_name tnews --model_path best_models/TNEWS/compress/0.75/h
 
 三类任务（分类、序列标注、阅读理解）经过裁剪 + 量化后加速比均达到 3 倍左右，所有任务上平均精度损失可控制在 0.5 以内（0.46）。
 
-<a name="使用FasterTokenizer加速"></a>
+<a name="使用FastTokenizer加速"></a>
 
-### 使用 FasterTokenizer 加速
+### 使用 FastTokenizer 加速
 
-FasterTokenizer 是飞桨提供的速度领先的文本处理算子库，集成了 Google 于 2021 年底发布的 LinMaxMatch 算法，该算法引入 Aho-Corasick 将 WordPiece 的时间复杂度从 O(N<sup>2</sup>) 优化到 O(N)，已在 Google 搜索业务中大规模上线。FasterTokenizer 速度显著领先，且呈现 batch_size 越大，优势越突出。例如，设置 batch_size = 64 时，FasterTokenizer 切词速度比 HuggingFace 快 28 倍。
+FastTokenizer 是飞桨提供的速度领先的文本处理算子库，集成了 Google 于 2021 年底发布的 LinMaxMatch 算法，该算法引入 Aho-Corasick 将 WordPiece 的时间复杂度从 O(N<sup>2</sup>) 优化到 O(N)，已在 Google 搜索业务中大规模上线。FastTokenizer 速度显著领先，且呈现 batch_size 越大，优势越突出。例如，设置 batch_size = 64 时，FastTokenizer 切词速度比 HuggingFace 快 28 倍。
 
-在 ERNIE 3.0 轻量级模型裁剪、量化基础上，当设置切词线程数为 4 时，使用 FasterTokenizer 在 NVIDIA Tesla T4 环境下在 IFLYTEK （长文本分类数据集，最大序列长度为 128）数据集上性能提升了 2.39 倍，相比 BERT-Base 性能提升了 7.09 倍，在 Intel(R) Xeon(R) Gold 6271C CPU @ 2.60GHz、线程数为 8 的情况下性能提升了 1.27 倍，相比 BERT-Base 性能提升了 5.13 倍。加速效果如下图所示：
+在 ERNIE 3.0 轻量级模型裁剪、量化基础上，当设置切词线程数为 4 时，使用 FastTokenizer 在 NVIDIA Tesla T4 环境下在 IFLYTEK （长文本分类数据集，最大序列长度为 128）数据集上性能提升了 2.39 倍，相比 BERT-Base 性能提升了 7.09 倍，在 Intel(R) Xeon(R) Gold 6271C CPU @ 2.60GHz、线程数为 8 的情况下性能提升了 1.27 倍，相比 BERT-Base 性能提升了 5.13 倍。加速效果如下图所示：
 
 <table>
     <tr>
@@ -1564,63 +1543,70 @@ FasterTokenizer 是飞桨提供的速度领先的文本处理算子库，集成�
     </tr>
 </table>
 
-使用 FasterTokenizer 的方式非常简单，在安装 faster_tokenizer 包之后，仅需在 tokenizer 实例化时直接传入 `use_faster=True` 即可。目前已在 Linux 系统下支持 BERT、ERNIE、TinyBERT 等模型。
+使用 FastTokenizer 的方式非常简单，在安装 fast_tokenizer 包之后，仅需在 tokenizer 实例化时直接传入 `use_fast=True` 即可。目前已在 Linux 系统下支持 BERT、ERNIE、TinyBERT 等模型。
 
-安装 faster_tokenizer 包的命令：
+安装 fast_tokenizer 包的命令：
 
 ```shell
-pip install faster_tokenizer
+pip install fast-tokenizer-python
 ```
 
-如需设置切词线程数，需要运行前先设置环境变量 `OMP_NUM_THREADS` ：
+如需设置切词线程数，需要调用`fast_tokenizer.set_thread_num`接口进行设置：
 
-```shell
+```python
 # 设置切词线程数为 4
-export OMP_NUM_THREADS=4
+import fast_tokenizer
+fast_tokenizer.set_thread_num(4)
 ```
 
-调用 `from_pretrained` 时只需轻松传入一个参数 `use_faster=True`：
+调用 `from_pretrained` 时只需轻松传入一个参数 `use_fast=True`：
 
 ```python
 from paddlenlp.transformers import AutoTokenizer
-AutoTokenizer.from_pretrained("ernie-3.0-medium-zh", use_faster=True)
+AutoTokenizer.from_pretrained("ernie-3.0-medium-zh", use_fast=True)
 ```
 
 <a name="部署"></a>
 
 ## 部署
-我们为 ERNIE 3.0 提供了多种部署方案，可以满足不同场景下的部署需求，请根据实际情况进行选择。
-<p align="center">
-        <img width="700" alt="image" src="https://user-images.githubusercontent.com/26483581/175260618-610a160c-270c-469a-842c-96871243c4ed.png">
-</p>
+
+我们基于 FastDeploy 为 ERNIE 3.0 提供了多种部署方案，可以满足不同场景下的部署需求，请根据实际情况进行选择。
+
+<a name="FastDeploy部署"></a>
+
+### FastDeploy 部署
+
+⚡️[FastDeploy](https://github.com/PaddlePaddle/FastDeploy)是一款全场景、易用灵活、极致高效的AI推理部署工具，为开发者提供多硬件、多推理引擎后端的部署能力。开发者只需调用一行代码即可随意切换硬件、推理引擎后端。
+
+<div align="center">
+
+<img src="https://user-images.githubusercontent.com/54695910/213087724-7175953a-0e07-4af8-a4a1-5304163da2e0.png" >
+
+</div>
+
+目前 ERNIE 3.0 模型已提供基于 FastDeploy 的部署示例，支持在多款硬件（CPU、GPU、昆仑芯、华为昇腾以及 Graphcore IPU）以及推理引擎后端进行部署。具体的适配的硬件以及推理引擎请参考：[FastDeploy 部署指南](./deploy/README.md)
 
 <a name="Python部署"></a>
 
-### Python 部署
+#### Python 部署
 
-Python部署请参考：[Python 部署指南](./deploy/python/README.md)
+Python 部署请参考：[Python 部署指南](./deploy/python/README.md)
+
+<a name="C++部署"></a>
+
+#### C++ 部署
+
+C++ 部署请参考：[C++ 部署指南](./deploy/cpp/README.md)
 
 <a name="服务化部署"></a>
 
 ### 服务化部署
 
-- [Triton Inference Server 服务化部署指南](./deploy/triton/README.md)
-- [Paddle Serving 服务化部署指南](./deploy/serving/README.md)
-
-<a name="Paddle2ONNX部署"></a>
-
-### Paddle2ONNX 部署
-
-ONNX 导出及 ONNXRuntime 部署请参考：[ONNX 导出及 ONNXRuntime 部署指南](./deploy/paddle2onnx/README.md)
-
-
-### Paddle Lite 移动端部署
-
-即将支持，敬请期待
+- [FastDeploy Serving 高性能服务化部署指南](./deploy/serving/README.md)
+- [PaddleNLP SimpleServing 服务化部署指南](./deploy/simple_serving/README.md)
 
 
 <a name="参考文献"></a>
-
 
 ## Notebook教程
 

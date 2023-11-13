@@ -13,26 +13,99 @@
 # limitations under the License.
 from __future__ import annotations
 
-import sys
-import os
-import site
-import shutil
-from typing import Optional
-import pip
 import importlib.util
+import os
+import shutil
+import site
+import sys
+from typing import Optional, Type
+
+import pip
+
 from paddlenlp.utils.log import logger
 
 
-def is_faster_tokenizer_available():
-    package_spec = importlib.util.find_spec("faster_tokenizer")
+def is_datasets_available():
+    import importlib
+
+    return importlib.util.find_spec("datasets") is not None
+
+
+def is_paddle_cuda_available() -> bool:
+    if is_paddle_available():
+        import paddle
+
+        return paddle.device.cuda.device_count() > 0
+    else:
+        return False
+
+
+def is_paddle_available() -> bool:
+    """check if `torch` package is installed
+    Returns:
+        bool: if `torch` is available
+    """
+    return is_package_available("paddle")
+
+
+def is_psutil_available():
+    return importlib.util.find_spec("psutil") is not None
+
+
+def is_tiktoken_available():
+    return importlib.util.find_spec("tiktoken") is not None
+
+
+def is_torch_available() -> bool:
+    """check if `torch` package is installed
+    Returns:
+        bool: if `torch` is available
+    """
+    return is_package_available("torch")
+
+
+def is_package_available(package_name: str) -> bool:
+    """check if the package is avaliable
+    Args:
+        package_name (str): the installed package name
+    Returns:
+        bool: the existence of installed package
+    """
+    package_spec = importlib.util.find_spec(package_name)
     return package_spec is not None and package_spec.has_location
 
 
-def install_package(package_name: str,
-                    version: Optional[str] = None,
-                    module_name: Optional[str] = None,
-                    cache_dir: Optional[str] = None):
-    """install the specific version of package 
+def is_fast_tokenizer_available() -> bool:
+    """check if `fast_tokenizer` ia avaliable
+    Returns:
+        bool: if `fast_tokenizer` is avaliable
+    """
+    return is_package_available("fast_tokenizer")
+
+
+def is_paddlenlp_ops_available() -> bool:
+    """check if `paddlenlp_ops` ia avaliable
+    Returns:
+        bool: if `paddlenlp_ops` is avaliable
+    """
+    return is_package_available("paddlenlp_ops")
+
+
+def is_transformers_available() -> bool:
+    """check if `transformers` package is installed
+    Returns:
+        bool: if `transformers` is available
+    """
+    return is_package_available("transformers")
+
+
+def install_package(
+    package_name: str,
+    version: Optional[str] = None,
+    module_name: Optional[str] = None,
+    cache_dir: Optional[str] = None,
+):
+    """install the specific version of package
 
     Args:
         package_name (str): the name of package
@@ -47,29 +120,21 @@ def install_package(package_name: str,
 
     # 2. install the package
     if version:
-        package_name += f'=={version}'
+        package_name += f"=={version}"
 
-    arguments = ['install']
+    arguments = ["install"]
     if cache_dir:
-        arguments += ['-t', cache_dir]
+        arguments += ["-t", cache_dir]
         sys.path.insert(0, cache_dir)
 
     # 3. load the pypi mirror to speedup of installing packages
-    mirror_key = 'PYPI_MIRROR'
+    mirror_key = "PYPI_MIRROR"
     mirror_source = os.environ.get(mirror_key, None)
-    if mirror_source is None:
-        logger.info(
-            f"use <https://mirror.baidu.com/pypi/simple> as the default "
-            f"mirror source. you can also change it by setting `{mirror_key}` environment variable"
-        )
-        mirror_source = "https://mirror.baidu.com/pypi/simple"
-    else:
-        logger.info(
-            f"loading <{mirror_source}> as the final mirror source to install package."
-        )
+    if mirror_source is not None:
+        logger.info(f"loading <{mirror_source}> from as the final mirror source to install package.")
+        arguments += ["-i", mirror_source]
 
-    arguments += ['-i', mirror_source, package_name]
-
+    arguments += [package_name]
     pip.main(arguments)
 
     # 4. add site-package to the top of package
@@ -106,3 +171,23 @@ def uninstall_package(package_name: str, module_name: Optional[str] = None):
     for key in list(sys.modules.keys()):
         if module_name in key:
             del sys.modules[key]
+
+
+def import_module(module_name: str) -> Optional[Type]:
+    """import moudle base on the model
+    Args:
+        module_name (str): the name of target module
+    """
+    # 1. prepare the name
+    assert "." in module_name, "`.` must be in the module_name"
+    index = module_name.rindex(".")
+    module = module_name[:index]
+    target_module_name = module_name[index + 1 :]
+
+    # 2. get the target module name
+    try:
+        module = importlib.import_module(module)
+        target_module = getattr(module, target_module_name, None)
+        return target_module
+    except ModuleNotFoundError:
+        return None

@@ -14,18 +14,18 @@ limitations under the License. */
 
 #include <string>
 #include <vector>
+#include "fast_tokenizer/pretokenizers/whitespace.h"
 #include "glog/logging.h"
 #include "gtest/gtest.h"
-#include "pretokenizers/whitespace.h"
 
 namespace paddlenlp {
 namespace fast_tokenizer {
 namespace tests {
 
 TEST(pretokenizers, whitespace) {
-  std::string input = "I \t am good\r   at \nsport.";
+  std::string input = "I \t am good\r   at \nsport";
   std::vector<std::string> expected_outputs = {
-      "I", "am", "good", "at", "sport."};
+      "I", "am", "good", "at", "sport"};
   pretokenizers::PreTokenizedString whitespace_input(input);
   pretokenizers::WhitespacePreTokenizer()(&whitespace_input);
   ASSERT_EQ(expected_outputs.size(), whitespace_input.GetSplitsSize());

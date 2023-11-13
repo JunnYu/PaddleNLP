@@ -13,20 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List, Optional, Dict, Any, Union
-
 import logging
-import subprocess
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 import paddle
 from paddleocr import PaddleOCR
-try:
-    from PIL.PpmImagePlugin import PpmImageFile
-    from PIL import Image
-except (ImportError, ModuleNotFoundError) as ie:
-    from pipelines.utils.import_utils import _optional_component_not_installed
-
-    _optional_component_not_installed(__name__, "ocr", ie)
 
 from pipelines.nodes.file_converter import BaseConverter
 
@@ -34,7 +26,6 @@ logger = logging.getLogger(__name__)
 
 
 class ImageToTextConverter(BaseConverter):
-
     def __init__(
         self,
         remove_numeric_tables: bool = False,
@@ -56,15 +47,11 @@ class ImageToTextConverter(BaseConverter):
         """
 
         # save init parameters to enable export of component config as YAML
-        self.set_config(remove_numeric_tables=remove_numeric_tables,
-                        valid_languages=valid_languages)
-        use_gpu = True if 'gpu' in paddle.device.get_device() else False
-        self.recognize = PaddleOCR(use_angle_cls=True,
-                                   lang='ch',
-                                   use_gpu=use_gpu)
+        self.set_config(remove_numeric_tables=remove_numeric_tables, valid_languages=valid_languages)
+        use_gpu = True if "gpu" in paddle.device.get_device() else False
+        self.recognize = PaddleOCR(use_angle_cls=True, lang="ch", use_gpu=use_gpu)
 
-        super().__init__(remove_numeric_tables=remove_numeric_tables,
-                         valid_languages=valid_languages)
+        super().__init__(remove_numeric_tables=remove_numeric_tables, valid_languages=valid_languages)
 
     def convert(
         self,
@@ -73,6 +60,7 @@ class ImageToTextConverter(BaseConverter):
         remove_numeric_tables: Optional[bool] = None,
         valid_languages: Optional[List[str]] = None,
         encoding: Optional[str] = "utf-8",
+        **kwargs: Any,
     ) -> List[Dict[str, Any]]:
         """
         Extract text from image file using the pytesseract library (https://github.com/madmaze/pytesseract)
@@ -103,14 +91,11 @@ class ImageToTextConverter(BaseConverter):
             cleaned_lines = []
             for line in lines:
                 words = line.split()
-                digits = [
-                    word for word in words if any(i.isdigit() for i in word)
-                ]
+                digits = [word for word in words if any(i.isdigit() for i in word)]
 
                 # remove lines having > 40% of words as digits AND not ending with a period(.)
                 if remove_numeric_tables:
-                    if words and len(digits) / len(
-                            words) > 0.4 and not line.strip().endswith("."):
+                    if words and len(digits) / len(words) > 0.4 and not line.strip().endswith("."):
                         logger.debug(f"Removing line '{line}' from file")
                         continue
                 cleaned_lines.append(line)
@@ -121,7 +106,8 @@ class ImageToTextConverter(BaseConverter):
             if not self.validate_language(document_text, valid_languages):
                 logger.warning(
                     f"The language for image is not one of {valid_languages}. The file may not have "
-                    f"been decoded in the correct text format.")
+                    f"been decoded in the correct text format."
+                )
         documents = []
         for page in cleaned_pages:
             document = {"content": page, "meta": meta}
@@ -137,7 +123,7 @@ class ImageToTextConverter(BaseConverter):
         img_path = str(img_path)
         result = self.recognize.ocr(img_path, cls=True)
         texts = []
-        for line in result:
+        for line in result[0]:
             texts.append(line[-1][0])
-        texts = [''.join(texts)]
+        texts = ["".join(texts)]
         return texts
