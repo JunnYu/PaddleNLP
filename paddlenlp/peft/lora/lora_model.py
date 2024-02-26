@@ -296,6 +296,7 @@ class LoRAModel(nn.Layer):
                     r=lora_config.r,
                     lora_alpha=lora_config.lora_alpha,
                     lora_dropout=lora_config.lora_dropout,
+                    use_dora=lora_config.use_dora,
                     merge_weights=lora_config.merge_weights,
                     bias_attr=False if module.bias is None else None,
                 )

@@ -74,7 +74,7 @@ class LoRALinear(nn.Linear):
         if self.use_dora:
             # magnitude = Magnitude column-wise across output dimension
             magnitude = self.weight.norm(p=2, axis=1, keepdim=True)
-            self.magnitude = self.create_parameter(
+            self.lora_magnitude = self.create_parameter(
                 shape=magnitude.shape,
                 dtype=self.weight.dtype,
                 is_bias=False,
@@ -92,7 +92,7 @@ class LoRALinear(nn.Linear):
             else:
                 with paddle.no_grad():
                     assert self.weight_norm is not None, "Weight norm should be set"
-                    dora_factor = self.magnitude / self.weight_norm
+                    dora_factor = self.lora_magnitude / self.weight_norm
                     new_weight = self.weight / dora_factor - self.lora_A @ self.lora_B * self.scaling
                     self.weight.set_value(new_weight)
                     self.merged = False
@@ -109,7 +109,7 @@ class LoRALinear(nn.Linear):
                 with paddle.no_grad():
                     dora_weight = self.weight + self.lora_A @ self.lora_B * self.scaling
                     self.weight_norm = dora_weight.norm(p=2, axis=1, keepdim=True)
-                    dora_factor = self.magnitude / self.weight_norm
+                    dora_factor = self.lora_magnitude / self.weight_norm
                     new_weight = dora_factor * dora_weight
                     self.weight.set_value(new_weight)
                     self.merged = True
@@ -130,7 +130,7 @@ class LoRALinear(nn.Linear):
                 # reflects the updates of ∆V , it won’t receive any gradient
                 # during backpropagation"
                 weight_norm = weight_norm.detach()
-                dora_factor = self.magnitude / weight_norm
+                dora_factor = self.lora_magnitude / weight_norm
                 lora_result = paddle.matmul(self.lora_dropout(input), lora_weight) * self.scaling
                 result = dora_factor * (result + lora_result)
         return result
