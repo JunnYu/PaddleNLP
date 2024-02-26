@@ -73,7 +73,7 @@ class LoRALinear(nn.Linear):
         self.weight_norm = None
         if self.use_dora:
             # magnitude = Magnitude column-wise across output dimension
-            magnitude = self.weight.norm(p=2, axis=0, keepdim=True)
+            magnitude = self.weight.norm(p=2, axis=1, keepdim=True)
             self.magnitude = self.create_parameter(
                 shape=magnitude.shape,
                 dtype=self.weight.dtype,
