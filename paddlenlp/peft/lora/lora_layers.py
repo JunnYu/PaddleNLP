@@ -108,8 +108,8 @@ class LoRALinear(nn.Linear):
             else:
                 with paddle.no_grad():
                     dora_weight = self.weight + self.lora_A @ self.lora_B * self.scaling
-                    self.weight_norm = weight_norm = dora_weight.norm(p=2, axis=1, keepdim=True)
-                    dora_factor = self.magnitude / weight_norm
+                    self.weight_norm = dora_weight.norm(p=2, axis=1, keepdim=True)
+                    dora_factor = self.magnitude / self.weight_norm
                     new_weight = dora_factor * dora_weight
                     self.weight.set_value(new_weight)
                     self.merged = True
