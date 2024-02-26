@@ -35,6 +35,7 @@ class LoRALinear(nn.Linear):
         lora_alpha: int = 1,
         lora_dropout: float = 0.0,
         merge_weights: bool = True,
+        use_dora: bool = False,
         **kwargs
     ):
         nn.Linear.__init__(self, in_features, out_features, **kwargs)
@@ -68,27 +69,70 @@ class LoRALinear(nn.Linear):
 
         # Freezing the pre-trained weight matrix
         self.weight.stop_gradient = True
+        self.use_dora = use_dora
+        self.weight_norm = None
+        if self.use_dora:
+            # magnitude = Magnitude column-wise across output dimension
+            magnitude = self.weight.norm(p=2, axis=0, keepdim=True)
+            self.magnitude = self.create_parameter(
+                shape=magnitude.shape,
+                dtype=self.weight.dtype,
+                is_bias=False,
+                default_initializer=nn.initializer.Assign(magnitude),
+            )
 
     def train(self):
         super().train()
         if self.merge_weights and self.merged:
-            # Make sure that the weights are not merged
-            new_weight = self.weight - self.lora_A @ self.lora_B * self.scaling
-            self.weight.set_value(new_weight)
-            self.merged = False
+            if not self.use_dora:
+                # Make sure that the weights are not merged
+                new_weight = self.weight - self.lora_A @ self.lora_B * self.scaling
+                self.weight.set_value(new_weight)
+                self.merged = False
+            else:
+                with paddle.no_grad():
+                    assert self.weight_norm is not None, "Weight norm should be set"
+                    dora_factor = self.magnitude / self.weight_norm
+                    new_weight = self.weight / dora_factor - self.lora_A @ self.lora_B * self.scaling
+                    self.weight.set_value(new_weight)
+                    self.merged = False
 
     def eval(self):
         super().eval()
         if self.merge_weights and not self.merged:
-            # Merge the weights and mark it
-            new_weight = self.weight + self.lora_A @ self.lora_B * self.scaling
-            self.weight.set_value(new_weight)
-            self.merged = True
+            if not self.use_dora:
+                # Merge the weights and mark it
+                new_weight = self.weight + self.lora_A @ self.lora_B * self.scaling
+                self.weight.set_value(new_weight)
+                self.merged = True
+            else:
+                with paddle.no_grad():
+                    dora_weight = self.weight + self.lora_A @ self.lora_B * self.scaling
+                    self.weight_norm = weight_norm = dora_weight.norm(p=2, axis=0, keepdim=True)
+                    dora_factor = self.magnitude / weight_norm
+                    new_weight = dora_factor * dora_weight
+                    self.weight.set_value(new_weight)
+                    self.merged = True
 
     def forward(self, input: paddle.Tensor, *args, **kwargs):
         result = F.linear(x=input, weight=self.weight, bias=self.bias, name=self.name)
         if not self.merged:
-            result += (self.lora_dropout(input) @ self.lora_A @ self.lora_B) * self.scaling
+            if not self.use_dora:
+                result += (self.lora_dropout(input) @ self.lora_A @ self.lora_B) * self.scaling
+            else:
+                lora_weight = self.lora_A @ self.lora_B
+                dora_weight = self.weight + lora_weight * self.scaling
+                weight_norm = dora_weight.norm(p=2, axis=0, keepdim=True)
+                # see section 4.3 of DoRA (https://arxiv.org/abs/2402.09353)
+                # "[...] we suggest treating ||V +∆V ||_c in
+                # Eq. (5) as a constant, thereby detaching it from the gradient
+                # graph. This means that while ||V + ∆V ||_c dynamically
+                # reflects the updates of ∆V , it won’t receive any gradient
+                # during backpropagation"
+                weight_norm = weight_norm.detach()
+                dora_factor = self.magnitude / weight_norm
+                lora_result = paddle.matmul(self.lora_dropout(input), lora_weight) * self.scaling
+                result = dora_factor * (result + lora_result)
         return result
 
     def extra_repr(self):
