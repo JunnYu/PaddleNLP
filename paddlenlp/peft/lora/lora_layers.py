@@ -70,15 +70,14 @@ class LoRALinear(nn.Linear):
         # Freezing the pre-trained weight matrix
         self.weight.stop_gradient = True
         self.use_dora = use_dora
+        self.apply_dora = False
         self.weight_norm = None
         if self.use_dora:
-            # magnitude = Magnitude column-wise across output dimension
-            magnitude = self.weight.norm(p=2, axis=1, keepdim=True)
             self.lora_magnitude = self.create_parameter(
-                shape=magnitude.shape,
+                shape=[in_features, 1],
                 dtype=self.weight.dtype,
                 is_bias=False,
-                default_initializer=nn.initializer.Assign(magnitude),
+                default_initializer=nn.initializer.Constant(value=1.0),
             )
 
     def train(self):
@@ -115,24 +114,27 @@ class LoRALinear(nn.Linear):
                     self.merged = True
 
     def forward(self, input: paddle.Tensor, *args, **kwargs):
-        result = F.linear(x=input, weight=self.weight, bias=self.bias, name=self.name)
+        if not self.apply_dora and self.use_dora:
+            self.lora_magnitude.set_value(self.weight.norm(p=2, axis=1, keepdim=True))
+            self.apply_dora = True
+
+        if not self.merged and self.use_dora:
+            result = 0.0
+        else:
+            result = F.linear(x=input, weight=self.weight, bias=self.bias, name=self.name)
         if not self.merged:
             if not self.use_dora:
                 result += (self.lora_dropout(input) @ self.lora_A @ self.lora_B) * self.scaling
             else:
-                lora_weight = self.lora_A @ self.lora_B
-                dora_weight = self.weight + lora_weight * self.scaling
-                weight_norm = dora_weight.norm(p=2, axis=1, keepdim=True)
-                # see section 4.3 of DoRA (https://arxiv.org/abs/2402.09353)
-                # "[...] we suggest treating ||V +∆V ||_c in
-                # Eq. (5) as a constant, thereby detaching it from the gradient
-                # graph. This means that while ||V + ∆V ||_c dynamically
-                # reflects the updates of ∆V , it won’t receive any gradient
-                # during backpropagation"
-                weight_norm = weight_norm.detach()
-                dora_factor = self.lora_magnitude / weight_norm
-                lora_result = paddle.matmul(self.lora_dropout(input), lora_weight) * self.scaling
-                result = dora_factor * (result + lora_result)
+                lora_weight = self.lora_A @ self.lora_B * self.scaling
+                dora_weight = self.weight + lora_weight
+                weight_norm = dora_weight.norm(p=2, axis=1, keepdim=True).detach()
+                result = F.linear(
+                    x=self.lora_dropout(input),
+                    weight=self.lora_magnitude * dora_weight / weight_norm,
+                    bias=self.bias,
+                    name=self.name,
+                )
         return result
 
     def extra_repr(self):
