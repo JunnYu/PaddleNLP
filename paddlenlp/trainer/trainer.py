@@ -1586,14 +1586,22 @@ class Trainer:
 
             if offload:
 
+                def get_accumulators(optimizer):
+                    state_dict = {}
+                    for k, v in optimizer._accumulators.items():
+                        for para_name, var_tmp in v.items():
+                            state_dict[var_tmp.name] = var_tmp
+                    return state_dict
+
                 def optimizer_hook(param):
                     @paddle.no_grad()
                     def warp(*_):
                         assert param.grad is not None
-                        reload_tensor_to_gpu(optimizer_dict[param].state_dict())
+                        accumulators = get_accumulators(optimizer_dict[param])
+                        reload_tensor_to_gpu(accumulators)
                         optimizer_dict[param].step()
                         optimizer_dict[param].clear_grad(set_to_zero=False)
-                        offload_tensor_to_cpu(optimizer_dict[param].state_dict())
+                        offload_tensor_to_cpu(accumulators)
 
                     return warp
 
