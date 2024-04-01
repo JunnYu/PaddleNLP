@@ -1512,6 +1512,120 @@ class Trainer:
         self.create_optimizer(self.lr_scheduler)
 
     def create_optimizer(self, lr_scheduler=None):
+        layerwise = strtobool(os.getenv("layerwise", "False"))
+        if layerwise:
+            return self.create_optimizer_layerwise(lr_scheduler=lr_scheduler)
+        else:
+            return self.create_optimizer_normal(lr_scheduler=lr_scheduler)
+
+    def create_optimizer_layerwise(self, lr_scheduler=None):
+        """
+        Setup the optimizer.
+
+        We provide a reasonable default that works well. If you want to use something else, you can pass a tuple in the
+        Trainer's init through `optimizers`, or subclass and override this method in a subclass.
+        """
+        offload = strtobool(os.getenv("offload", "False"))
+        global_dev_id = 0 if paddle.get_device() == "cpu" else int(paddle.get_device().split(":")[1])
+
+        def offload_tensor_to_cpu(tensors):
+            if isinstance(tensors, dict):
+                for _, v in tensors.items():
+                    offload_tensor_to_cpu(v)
+            elif isinstance(tensors, paddle.Tensor):
+                if tensors.place.is_gpu_place():
+                    cpu_tensor = tensors._copy_to(paddle.CUDAPinnedPlace(), False)
+                    tensors.value().get_tensor()._share_data_with(cpu_tensor.value().get_tensor())
+            else:
+                # logger.warning(f"Can't parse for type {type(tensors)}")
+                return tensors
+
+        def reload_tensor_to_gpu(tensors):
+            if isinstance(tensors, dict):
+                for _, v in tensors.items():
+                    reload_tensor_to_gpu(v)
+            elif isinstance(tensors, paddle.Tensor):
+                if not tensors.place.is_gpu_place():
+                    gpu_tensor = tensors._copy_to(paddle.CUDAPlace(global_dev_id), False)
+                    tensors.value().get_tensor()._share_data_with(gpu_tensor.value().get_tensor())
+            else:
+                # logger.warning(f"Can't parse for type {type(tensors)}")
+                return tensors
+
+        if self.optimizer is None:
+            if self.optimizer_grouped_parameters is not None:
+                params = self.optimizer_grouped_parameters
+                apply_decay_param_fun = None
+            else:
+                params = self.model.parameters()
+                decay_parameters = [
+                    p.name for n, p in self.model.named_parameters() if not any(nd in n for nd in ["bias", "norm"])
+                ]
+
+                def apply_decay_param_fun(x):
+                    return x in decay_parameters
+
+            optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(self.args)
+            if hasattr(optimizer_cls, "_create_master_weight") and self.args.fp16_opt_level == "O2":
+                optimizer_kwargs["multi_precision"] = True
+
+            optimizer_dict = {
+                param: optimizer_cls(
+                    learning_rate=self.lr_scheduler if lr_scheduler is None else lr_scheduler,
+                    apply_decay_param_fun=apply_decay_param_fun,
+                    parameters=[param],
+                    weight_decay=self.args.weight_decay,
+                    grad_clip=nn.ClipGradByGlobalNorm(self.args.max_grad_norm)
+                    if self.args.max_grad_norm > 0
+                    else None,
+                    **optimizer_kwargs,
+                )
+                for param in params
+                if not param.stop_gradient
+            }
+
+            if offload:
+
+                def optimizer_hook(param):
+                    @paddle.no_grad()
+                    def warp(*_):
+                        assert param.grad is not None
+                        reload_tensor_to_gpu(optimizer_dict[param].state_dict())
+                        optimizer_dict[param].step()
+                        optimizer_dict[param].clear_grad(set_to_zero=False)
+                        offload_tensor_to_cpu(optimizer_dict[param].state_dict())
+
+                    return warp
+
+            else:
+
+                def optimizer_hook(param):
+                    @paddle.no_grad()
+                    def warp(*_):
+                        assert param.grad is not None
+                        optimizer_dict[param].step()
+                        optimizer_dict[param].clear_grad(set_to_zero=False)
+
+                    return warp
+
+            for param in params:
+                if not param.stop_gradient:
+                    param._register_backward_hook(optimizer_hook(param))
+
+            self.optimizer = optimizer_cls(
+                learning_rate=self.lr_scheduler if lr_scheduler is None else lr_scheduler,
+                apply_decay_param_fun=apply_decay_param_fun,
+                parameters=[params[0]],
+                weight_decay=self.args.weight_decay,
+                grad_clip=nn.ClipGradByGlobalNorm(self.args.max_grad_norm) if self.args.max_grad_norm > 0 else None,
+                **optimizer_kwargs,
+            )
+            self.optimizer.clear_grad = lambda *args, **kwargs: None
+            self.optimizer.step = lambda *args, **kwargs: None
+
+        return self.optimizer
+
+    def create_optimizer_normal(self, lr_scheduler=None):
         """
         Setup the optimizer.
 
