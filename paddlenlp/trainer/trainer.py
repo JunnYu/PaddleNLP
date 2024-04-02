@@ -1600,6 +1600,8 @@ class Trainer:
                         if step[0] % self.args.gradient_accumulation_steps == 0:
                             step[0] = 0
                             reload_tensor_to_gpu(optimizer_dict[param].state_dict(), blocking=True)
+                            if self.args.world_size > 1:
+                                fused_allreduce_gradients([param], None)
                             if is_init_stage[0]:
                                 raw_device = paddle.get_device()
                                 paddle.set_device("cpu")
