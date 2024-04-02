@@ -1527,6 +1527,9 @@ class Trainer:
         """
         offload = strtobool(os.getenv("offload", "False"))
         global_dev_id = 0 if paddle.get_device() == "cpu" else int(paddle.get_device().split(":")[1])
+        if self.args.max_grad_norm > 0:
+            self.args.max_grad_norm = 0.0
+            logger.warning("`max_grad_norm` is not supported in layerwise optimizer!")
 
         def offload_tensor_to_cpu(tensors, blocking=True):
             if isinstance(tensors, dict):
@@ -1633,7 +1636,7 @@ class Trainer:
                 apply_decay_param_fun=apply_decay_param_fun,
                 parameters=params,
                 weight_decay=self.args.weight_decay,
-                grad_clip=nn.ClipGradByGlobalNorm(self.args.max_grad_norm) if self.args.max_grad_norm > 0 else None,
+                grad_clip=None,
                 **optimizer_kwargs,
             )
             self.optimizer.clear_grad = lambda *args, **kwargs: None
