@@ -981,12 +981,13 @@ class Trainer:
 
                     # Case 1: Use recompute and dp / sharding stage1,
                     # manualy collect gradient for dp.
-                    if args.recompute and availiable_no_sync:
-                        fused_allreduce_gradients(list(model.parameters()), None)
+                    if not self.layerwise:
+                        if args.recompute and availiable_no_sync:
+                            fused_allreduce_gradients(list(model.parameters()), None)
 
-                    # Case 2: hack dp with master_grad
-                    if dp_master_grad and not (args.recompute and availiable_no_sync):
-                        fused_allreduce_gradients(list(model.parameters()), None)
+                        # Case 2: hack dp with master_grad
+                        if dp_master_grad and not (args.recompute and availiable_no_sync):
+                            fused_allreduce_gradients(list(model.parameters()), None)
 
                     # Pipeline parallel mode,  handle gradient reduce here to overlap
                     pipeline_parallel_config = (
@@ -1512,8 +1513,8 @@ class Trainer:
         self.create_optimizer(self.lr_scheduler)
 
     def create_optimizer(self, lr_scheduler=None):
-        layerwise = strtobool(os.getenv("layerwise", "False"))
-        if layerwise:
+        self.layerwise = strtobool(os.getenv("layerwise", "False"))
+        if self.layerwise:
             return self.create_optimizer_layerwise(lr_scheduler=lr_scheduler)
         else:
             return self.create_optimizer_normal(lr_scheduler=lr_scheduler)
@@ -1622,6 +1623,8 @@ class Trainer:
 
                         if step[0] % self.args.gradient_accumulation_steps == 0:
                             step[0] = 0
+                            if self.args.world_size > 1:
+                                fused_allreduce_gradients([param], None)
                             optimizer_dict[param].step()
                             optimizer_dict[param].clear_grad(set_to_zero=False)
 
