@@ -1594,25 +1594,34 @@ class Trainer:
                     return state_dict
 
                 def optimizer_hook(param):
+                    step = [0]
+
                     @paddle.no_grad()
                     def warp(*_):
-                        assert param.grad is not None
-                        accumulators = get_accumulators(optimizer_dict[param])
-                        reload_tensor_to_gpu(accumulators)
-                        optimizer_dict[param].step()
-                        optimizer_dict[param].clear_grad(set_to_zero=False)
-                        offload_tensor_to_cpu(accumulators)
+                        step[0] += 1
+                        if step[0] % self.args.gradient_accumulation_steps == 0:
+                            step[0] = 0
+                            accumulators = get_accumulators(optimizer_dict[param])
+                            reload_tensor_to_gpu(accumulators)
+                            optimizer_dict[param].step()
+                            optimizer_dict[param].clear_grad(set_to_zero=False)
+                            offload_tensor_to_cpu(accumulators)
 
                     return warp
 
             else:
 
                 def optimizer_hook(param):
+                    step = [0]
+
                     @paddle.no_grad()
                     def warp(*_):
-                        assert param.grad is not None
-                        optimizer_dict[param].step()
-                        optimizer_dict[param].clear_grad(set_to_zero=False)
+                        step[0] += 1
+
+                        if step[0] % self.args.gradient_accumulation_steps == 0:
+                            step[0] = 0
+                            optimizer_dict[param].step()
+                            optimizer_dict[param].clear_grad(set_to_zero=False)
 
                     return warp
 
@@ -1623,13 +1632,14 @@ class Trainer:
             self.optimizer = optimizer_cls(
                 learning_rate=self.lr_scheduler if lr_scheduler is None else lr_scheduler,
                 apply_decay_param_fun=apply_decay_param_fun,
-                parameters=[params[0]],
+                parameters=params,
                 weight_decay=self.args.weight_decay,
                 grad_clip=nn.ClipGradByGlobalNorm(self.args.max_grad_norm) if self.args.max_grad_norm > 0 else None,
                 **optimizer_kwargs,
             )
             self.optimizer.clear_grad = lambda *args, **kwargs: None
             self.optimizer.step = lambda *args, **kwargs: None
+            self.optimizer._step = lambda *args, **kwargs: None
 
         return self.optimizer
 
