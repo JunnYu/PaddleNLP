@@ -1636,9 +1636,10 @@ class Trainer:
                 apply_decay_param_fun=apply_decay_param_fun,
                 parameters=params,
                 weight_decay=self.args.weight_decay,
-                grad_clip=None,
+                grad_clip=nn.ClipGradByGlobalNorm(self.args.max_grad_norm) if self.args.max_grad_norm > 0 else None,
                 **optimizer_kwargs,
             )
+            self.optimizer.clear_gradients = lambda *args, **kwargs: None
             self.optimizer.clear_grad = lambda *args, **kwargs: None
             self.optimizer.step = lambda *args, **kwargs: None
             self.optimizer._step = lambda *args, **kwargs: None
