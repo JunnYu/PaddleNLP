@@ -1528,25 +1528,25 @@ class Trainer:
         offload = strtobool(os.getenv("offload", "False"))
         global_dev_id = 0 if paddle.get_device() == "cpu" else int(paddle.get_device().split(":")[1])
 
-        def offload_tensor_to_cpu(tensors):
+        def offload_tensor_to_cpu(tensors, blocking=True):
             if isinstance(tensors, dict):
                 for _, v in tensors.items():
                     offload_tensor_to_cpu(v)
             elif isinstance(tensors, paddle.Tensor):
                 if tensors.place.is_gpu_place():
-                    cpu_tensor = tensors._copy_to(paddle.CUDAPinnedPlace(), False)
+                    cpu_tensor = tensors._copy_to(paddle.CUDAPinnedPlace(), blocking)
                     tensors.value().get_tensor()._share_data_with(cpu_tensor.value().get_tensor())
             else:
                 # logger.warning(f"Can't parse for type {type(tensors)}")
                 return tensors
 
-        def reload_tensor_to_gpu(tensors):
+        def reload_tensor_to_gpu(tensors, blocking=True):
             if isinstance(tensors, dict):
                 for _, v in tensors.items():
                     reload_tensor_to_gpu(v)
             elif isinstance(tensors, paddle.Tensor):
                 if not tensors.place.is_gpu_place():
-                    gpu_tensor = tensors._copy_to(paddle.CUDAPlace(global_dev_id), False)
+                    gpu_tensor = tensors._copy_to(paddle.CUDAPlace(global_dev_id), blocking)
                     tensors.value().get_tensor()._share_data_with(gpu_tensor.value().get_tensor())
             else:
                 # logger.warning(f"Can't parse for type {type(tensors)}")
@@ -1586,26 +1586,25 @@ class Trainer:
 
             if offload:
 
-                def get_accumulators(optimizer):
-                    state_dict = {}
-                    for k, v in optimizer._accumulators.items():
-                        for para_name, var_tmp in v.items():
-                            state_dict[var_tmp.name] = var_tmp
-                    return state_dict
-
                 def optimizer_hook(param):
                     step = [0]
+                    is_init_stage = [True]
 
                     @paddle.no_grad()
                     def warp(*_):
                         step[0] += 1
                         if step[0] % self.args.gradient_accumulation_steps == 0:
                             step[0] = 0
-                            accumulators = get_accumulators(optimizer_dict[param])
-                            reload_tensor_to_gpu(accumulators)
+                            reload_tensor_to_gpu(optimizer_dict[param].state_dict(), blocking=True)
+                            if is_init_stage[0]:
+                                raw_device = paddle.get_device()
+                                paddle.set_device("cpu")
                             optimizer_dict[param].step()
                             optimizer_dict[param].clear_grad(set_to_zero=False)
-                            offload_tensor_to_cpu(accumulators)
+                            if is_init_stage[0]:
+                                paddle.set_device(raw_device)
+                                is_init_stage[0] = False
+                            offload_tensor_to_cpu(optimizer_dict[param].state_dict(), blocking=True)
 
                     return warp
 
