@@ -45,6 +45,7 @@ def custom_import(name, *args, **kwargs):
     module = _original_import(name, *args, **kwargs)
     if os.getenv("USE_PYBIND", "1").lower() in ["1", "true", "t", "yes", "y"]:
         if name == "paddlenlp_ops":
+            print("[NOTE]: Using Pybind paddlenlp_ops!")
             module.update_inputs_v2 = module.f_update_inputs_v2
             module.save_output = module.f_save_output
             module.set_preids_token_penalty_multi_scores = module.f_set_preids_token_penalty_multi_scores
@@ -249,7 +250,7 @@ class PolicyPredictor(DygraphBlockInferencePredictor):
         self.model_inputs["cache_kvs"] = None
         paddle.device.cuda.empty_cache()
 
-        if not self.use_fake_inference_inputs:
+        if not self.rollout_use_fake_outputs:
             output_tokens = self.model_inputs["all_token_ids"]
             output_tokens = paddle.where(
                 output_tokens < 0,
@@ -268,7 +269,31 @@ class PolicyPredictor(DygraphBlockInferencePredictor):
             row_ids = process_row(row, remove_value=self.tokenizer.pad_token_id, remove_side="left").tolist()
             input_ids_list.append(row_ids)
 
-        return self.predict_dy_insert(input_ids_list, **kwargs)[:bs]
+        if self.config.dynamic_insert:
+            return self.predict_dy_insert(input_ids_list, **kwargs)[:bs]
+        else:
+            with self.update_predictor_params(**kwargs):
+                self._preprocess(input_text=None, input_ids=input_ids_list)
+                self.init_cache_kvs()
+                if not self.rollout_use_fake_outputs:
+                    all_tokens = []
+                    while self.model_inputs["not_need_stop"]:
+                        next_tokens = self._infer(self.model_inputs)[:bs]
+                        all_tokens.append(next_tokens)
+
+            # remove cache kvs
+            self.cache_kvs = None
+            self.model_inputs["cache_kvs"] = None
+            paddle.device.cuda.empty_cache()
+
+            if not self.rollout_use_fake_outputs:
+                outputs = paddle.concat(all_tokens, axis=-1)
+                outputs = paddle.where(
+                    outputs < 0, paddle.to_tensor(self.tokenizer.pad_token_id, dtype=outputs.dtype), outputs
+                )
+            else:
+                outputs = (paddle.ones([bs, self.config.max_length]) * 1000).cast("int64")
+            return outputs
 
     @paddle.no_grad()
     def set_state_dict(self, model, offload_model=True):
@@ -305,7 +330,7 @@ def create_predictor(trainer: Trainer):
         dtype=trainer.amp_dtype,
         output_via_mq=False,
         init_cache_kvs=False,
-        dynamic_insert=True,
+        dynamic_insert=trainer.args.rollout_use_dynamic_insert,
     )
     model_args = ModelArgument()
     config = copy.deepcopy(trainer.model.config)
@@ -329,7 +354,7 @@ def create_predictor(trainer: Trainer):
             model=model,
             model_args=model_args,
         )
-        predictor.use_fake_inference_inputs = trainer.args.use_fake_inference_inputs
+        predictor.rollout_use_fake_outputs = trainer.args.rollout_use_fake_outputs
         predictor.is_available = False
     return predictor
 

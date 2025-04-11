@@ -271,9 +271,13 @@ class TrainingArguments(TrainingArguments):
         default=-1,
         metadata={"help": "Batch size per device for model training forward."},
     )
-    use_fake_inference_inputs: bool = field(
+    rollout_use_fake_outputs: bool = field(
         default=False,
-        metadata={"help": "Use fake inputs for model training."},
+        metadata={"help": "Rollout use fake outputs for model training."},
+    )
+    rollout_use_dynamic_insert: bool = field(
+        default=False,
+        metadata={"help": "Rollout use dynamic insert for model inference."},
     )
 
     def __post_init__(self):

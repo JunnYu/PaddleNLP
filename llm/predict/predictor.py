@@ -75,6 +75,7 @@ def custom_import(name, *args, **kwargs):
     module = _original_import(name, *args, **kwargs)
     if os.getenv("USE_PYBIND", "1").lower() in ["1", "true", "t", "yes", "y"]:
         if name == "paddlenlp_ops":
+            print("[NOTE]: Using Pybind paddlenlp_ops!")
             module.update_inputs_v2 = module.f_update_inputs_v2
             module.save_output = module.f_save_output
             module.set_preids_token_penalty_multi_scores = module.f_set_preids_token_penalty_multi_scores
