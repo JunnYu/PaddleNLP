@@ -267,6 +267,14 @@ class TrainingArguments(TrainingArguments):
     use_fp32_compute: bool = field(
         default=False, metadata={"help": "Use fp32 to compute xx_log_prob,rewards, advantages and loss."}
     )
+    per_device_train_split_batch_size: int = field(
+        default=-1,
+        metadata={"help": "Batch size per device for model training forward."},
+    )
+    use_fake_inference_inputs: bool = field(
+        default=False,
+        metadata={"help": "Use fake inputs for model training."},
+    )
 
     def __post_init__(self):
         """

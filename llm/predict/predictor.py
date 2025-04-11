@@ -13,11 +13,13 @@
 # limitations under the License.
 from __future__ import annotations
 
+import copy
 import json
 import os
 import sys
 import time
 from abc import abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from threading import Thread
 from typing import List
@@ -36,6 +38,8 @@ try:
     )
 except:
     pass
+import builtins
+
 from paddlenlp.generation import GenerationConfig, TextIteratorStreamer
 from paddlenlp.peft import LoRAConfig, LoRAModel, PrefixConfig, PrefixModelForCausalLM
 from paddlenlp.taskflow.utils import static_mode_guard
@@ -63,6 +67,20 @@ from paddlenlp.utils.env import (
 )
 from paddlenlp.utils.import_utils import is_paddlenlp_ops_available
 from paddlenlp.utils.log import logger
+
+_original_import = builtins.__import__
+
+
+def custom_import(name, *args, **kwargs):
+    module = _original_import(name, *args, **kwargs)
+    if os.getenv("USE_PYBIND", "1").lower() in ["1", "true", "t", "yes", "y"]:
+        if name == "paddlenlp_ops":
+            module.update_inputs_v2 = module.f_update_inputs_v2
+            module.save_output = module.f_save_output
+            module.set_preids_token_penalty_multi_scores = module.f_set_preids_token_penalty_multi_scores
+            module.rebuild_padding_v2 = module.f_rebuild_padding_v2
+            module.append_attention = module.f_append_attention
+    return module
 
 
 @dataclass
@@ -188,6 +206,9 @@ class PredictorArgument:
         default=True,
         metadata={"help": "Controls whether the message queue is enabled for output"},
     )
+    dynamic_insert: bool = field(default=False, metadata={"help": "whether use dynamic insert"})
+    total_request_num: int = field(default=1, metadata={"help": "The total number of request data"})
+    init_cache_kvs: bool = field(default=True, metadata={"help": "whether init cache_kvs"})
 
     def __post_init__(self):
         if self.speculate_method is not None:
@@ -1079,6 +1100,7 @@ class DygraphBlockInferencePredictor(BlockInferencePredictorMixin):
         self.return_full_hidden_states = config.return_full_hidden_states
         self.full_hidden_states = None
         self.tokenizer = tokenizer
+        self.dynamic_insert = config.dynamic_insert
         if model is None:
             raise ValueError("model should be provided for DygraphBlockInferencePredictor")
         self.cache_k_shapes, self.cache_v_shapes = model.get_cache_kvs_shape(model.config, config.batch_size)
@@ -1095,7 +1117,7 @@ class DygraphBlockInferencePredictor(BlockInferencePredictorMixin):
             self.model_inputs["k_dequant_scales"] = self.k_dequant_scales
             self.model_inputs["v_dequant_scales"] = self.v_dequant_scales
 
-        if kwargs.get("init_cache_kvs", True):
+        if config.init_cache_kvs:
             self.init_cache_kvs()
 
         # init speculate components
@@ -1194,6 +1216,8 @@ class DygraphBlockInferencePredictor(BlockInferencePredictorMixin):
 
     @paddle.no_grad()
     def predict(self, input_texts: list[str], return_tokens=False):
+        if self.dynamic_insert:
+            return self.predict_dy_insert(input_texts, return_tokens)
         if self.config.output_via_mq:
             return self.predict_via_mq(input_texts, return_tokens)
         self._preprocess(input_texts)
@@ -1896,13 +1920,17 @@ def predict():
                     target_texts.append("")
 
     else:
+        # source_texts = [
+        #     "2014年3月，大范围雾霾天气长时间影响我国东部地区，严重危害人体健康。造成雾霾天气的人为原因有____\r\n①工业生产中使用矿物作为燃料，大量排放污染物     ②汽车尾气的大量排放     \r\n③风力小，空气流动不畅     ④冬季取暖排放粉尘\nA. ①②③\nB. ②③④\nC. ①③④\nD. ①②④"
+        # ] * predictor_args.batch_size
+        # target_texts = [""] * predictor_args.batch_size
         source_texts = [
             "2014年3月，大范围雾霾天气长时间影响我国东部地区，严重危害人体健康。造成雾霾天气的人为原因有____\r\n①工业生产中使用矿物作为燃料，大量排放污染物     ②汽车尾气的大量排放     \r\n③风力小，空气流动不畅     ④冬季取暖排放粉尘\nA. ①②③\nB. ②③④\nC. ①③④\nD. ①②④"
-        ] * predictor_args.batch_size
-        target_texts = [""] * predictor_args.batch_size
+        ] * predictor_args.total_request_num
+        target_texts = [""] * predictor_args.total_request_num
 
-    batch_source_texts = batchfy_text(source_texts, predictor_args.batch_size)
-    batch_target_texts = batchfy_text(target_texts, predictor_args.batch_size)
+    batch_source_texts = batchfy_text(source_texts, predictor_args.total_request_num)
+    batch_target_texts = batchfy_text(target_texts, predictor_args.total_request_num)
 
     with open(model_args.output_file, "w", encoding="utf-8") as f:
         for bs, batch_source_text in enumerate(batch_source_texts):
