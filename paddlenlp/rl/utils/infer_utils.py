@@ -105,7 +105,6 @@ class PolicyPredictor(DygraphBlockInferencePredictor):
     @paddle.no_grad()
     def predict_dy_insert(self, input_ids: list[int], **kwargs):
         # pybind
-        builtins.__import__ = custom_import
         self.input_ids = input_ids
         assert self.proposer is None, "dynamic insert don't support proposer."
 
@@ -263,6 +262,7 @@ class PolicyPredictor(DygraphBlockInferencePredictor):
 
     @paddle.no_grad()
     def predict(self, input_ids: paddle.Tensor = None, **kwargs):
+        builtins.__import__ = custom_import
         bs = input_ids.shape[0]
         input_ids_list = []
         for row in input_ids:
