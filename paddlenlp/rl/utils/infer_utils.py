@@ -485,4 +485,5 @@ class InferEvalModel:
             )
         outputs = policy_predictor.predict(input_ids=input_ids, **kwargs)
         outputs = paddle.concat([input_ids, outputs], axis=-1)
+        dist.barrier()
         return (outputs,)
