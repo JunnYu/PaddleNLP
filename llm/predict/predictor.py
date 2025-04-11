@@ -69,33 +69,28 @@ from paddlenlp.utils.import_utils import is_paddlenlp_ops_available
 from paddlenlp.utils.log import logger
 
 _original_import = builtins.__import__
-_imported_modules = {}  # 用于缓存已导入的模块
-_paddlenlp_ops_updated = False  # 用于标记 paddlenlp_ops 是否已经更新
+_imported_modules = {}
+_paddlenlp_ops_updated = False
 
 
 def custom_import(name, *args, **kwargs):
     global _paddlenlp_ops_updated
 
-    # 如果模块已经导入过，直接返回缓存的模块
     if name in _imported_modules:
         return _imported_modules[name]
 
-    # 否则，使用原始的 __import__ 导入模块
     module = _original_import(name, *args, **kwargs)
 
-    # 如果是第一次导入 paddlenlp_ops 并且需要更新
     if not _paddlenlp_ops_updated and os.getenv("USE_PYBIND", "1").lower() in ["1", "true", "t", "yes", "y"]:
         if name == "paddlenlp_ops":
-            print("[NOTE]: Using Pybind paddlenlp_ops!")
-            # 执行更新操作
+            logger.info("Using Pybind paddlenlp_ops!")
             module.update_inputs_v2 = module.f_update_inputs_v2
             module.save_output = module.f_save_output
             module.set_preids_token_penalty_multi_scores = module.f_set_preids_token_penalty_multi_scores
             module.rebuild_padding_v2 = module.f_rebuild_padding_v2
             module.append_attention = module.f_append_attention
-            _paddlenlp_ops_updated = True  # 标记为已更新
+            _paddlenlp_ops_updated = True
 
-    # 缓存导入的模块
     _imported_modules[name] = module
     return module
 
