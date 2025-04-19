@@ -1241,6 +1241,7 @@ class PPOTrainer(Trainer):
             total_batch=combined_balance_batch,
             per_device_train_batch_size=self.args.per_device_train_batch_size,
             pad_token_id=self.tokenizer.pad_token_id,
+            pad_to_multiple_of=self.args.tensor_parallel_degree if self._model_config.sequence_parallel else None,
         )
         return micro_batches
 

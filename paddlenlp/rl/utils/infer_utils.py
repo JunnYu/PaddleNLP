@@ -73,8 +73,9 @@ class PolicyPredictor(DygraphBlockInferencePredictor):
     def __init__(
         self, config: PredictorArgument, tokenizer: PretrainedTokenizer = None, model: PretrainedModel = None, **kwargs
     ):
+        self.args = kwargs.pop("training_args", None)
+        self.is_available = kwargs.pop("is_available", False)
         super().__init__(config, tokenizer, model, **kwargs)
-        self.args = kwargs["training_args"]
 
     def enable(self, model, offload_model=True):
         if self.is_available:
@@ -90,33 +91,6 @@ class PolicyPredictor(DygraphBlockInferencePredictor):
             model.to(paddle.device.get_device())
         self.is_available = False
 
-    @contextmanager
-    def update_predictor_params(self, **kwargs):
-        # update predictor config
-        if kwargs:
-            old_predictor_config = copy.deepcopy(self.config)
-            for key, new_value in kwargs.items():
-                if hasattr(self.config, key):
-                    old_value = getattr(self.config, key)
-                    if old_value != new_value:
-                        setattr(self.config, key, new_value)
-                        if key == "top_p":
-                            self.update_model_inputs("top_p", new_value)
-                        if key == "temperature":
-                            self.update_model_inputs("temperature", new_value)
-        yield
-        if kwargs:
-            if self.config.top_p != old_predictor_config:
-                self.update_model_inputs("top_p", old_predictor_config.top_p)
-            if self.config.temperature != old_predictor_config:
-                self.update_model_inputs("temperature", old_predictor_config.temperature)
-            self.config = old_predictor_config
-
-    def update_model_inputs(self, key, value):
-        assert key in self.model_inputs, f"{key} is not in model_inputs!"
-        old_value = self.model_inputs.pop(key)
-        self.model_inputs[key] = paddle.full(shape=old_value.shape, fill_value=value, dtype=old_value.dtype)
-
     @paddle.no_grad()
     def predict(self, input_ids: paddle.Tensor = None, **kwargs):
         bs = input_ids.shape[0]
@@ -125,10 +99,9 @@ class PolicyPredictor(DygraphBlockInferencePredictor):
             row_ids = process_row(row, remove_value=self.tokenizer.pad_token_id, remove_side="left").tolist()
             input_ids_list.append(row_ids)
 
-        with self.update_predictor_params(**kwargs):
-            self._preprocess(input_text=None, input_ids=input_ids_list)
-            self.init_cache_kvs()
-            all_tokens = []
+        if self.rollout_use_fake_outputs:
+            return (paddle.ones([bs, kwargs.get("max_length", self.config.max_length)]) * 1000).cast(input_ids.dtype)
+        if self.config.dynamic_insert:
             if (
                 self.args.rollout_tensor_parallel_degree != self.args.tensor_parallel_degree
                 or self.args.pipeline_parallel_degree > 1
@@ -142,26 +115,26 @@ class PolicyPredictor(DygraphBlockInferencePredictor):
                     dist.broadcast = lambda x, rank: ori_broadcast(
                         x, src=tp_group.ranks[0], group=hcg.get_model_parallel_group()
                     )
-                    while self.model_inputs["not_need_stop"]:
-                        next_tokens = self._infer(self.model_inputs)[:bs]
-                        all_tokens.append(next_tokens)
-                dist.all_reduce = ori_all_reduce
-                dist.broadcast = ori_broadcast
+                    outputs = self.predict_dy_insert(
+                        input_ids=input_ids_list,
+                        return_tokens=True,
+                        all_rank_return=True,
+                        detokenize=False,
+                        **kwargs,
+                    )[-1]
+                    dist.all_reduce = ori_all_reduce
+                    dist.broadcast = ori_broadcast
             else:
-                while self.model_inputs["not_need_stop"]:
-                    next_tokens = self._infer(self.model_inputs)[:bs]
-                    all_tokens.append(next_tokens)
-
-        # remove cache kvs
-        self.cache_kvs = None
-        self.model_inputs["cache_kvs"] = None
-        paddle.device.cuda.empty_cache()
-
-        outputs = paddle.concat(all_tokens, axis=-1)
-        outputs = paddle.where(
-            outputs < 0, paddle.to_tensor(self.tokenizer.pad_token_id, dtype=outputs.dtype), outputs
-        )
-        return outputs
+                outputs = self.predict_dy_insert(
+                    input_ids=input_ids_list,
+                    return_tokens=True,
+                    all_rank_return=True,
+                    detokenize=False,
+                    **kwargs,
+                )[-1]
+            return paddle.to_tensor(outputs, dtype=input_ids.dtype)
+        else:
+            raise NotImplementedError("dynamic_insert is False is not supported.")
 
     @paddle.no_grad()
     def set_state_dict(self, model, offload_model=True):
@@ -185,7 +158,7 @@ def create_predictor(trainer: Trainer):
         min_length=trainer.args.min_dec_len,
         max_length=trainer.args.max_dec_len,
         total_max_length=trainer.args.max_src_len + trainer.args.max_dec_len,
-        batch_size=trainer.args.per_device_rollout_batch_size * trainer.args.num_return_sequences,
+        batch_size=trainer.args.rollout_continue_batching_batch_size,
         top_p=trainer.args.top_p,
         temperature=trainer.args.temperature,
         repetition_penalty=trainer.args.repetition_penalty,
@@ -193,6 +166,8 @@ def create_predictor(trainer: Trainer):
         inference_model=True,
         dtype=trainer.amp_dtype,
         output_via_mq=False,
+        dynamic_insert=trainer.args.rollout_use_dynamic_insert,
+        quant_type=trainer.args.rollout_quant_type,
     )
     model_args = ModelArgument()
     config = copy.deepcopy(trainer.model.config)
@@ -223,7 +198,6 @@ def create_predictor(trainer: Trainer):
                 tensor_parallel_rank=tensor_parallel_rank,
                 low_cpu_mem_usage=True,
             )
-            model.save_output = False
             predictor = PolicyPredictor(
                 predictor_args,
                 tokenizer=trainer.tokenizer,
@@ -231,8 +205,9 @@ def create_predictor(trainer: Trainer):
                 model_args=model_args,
                 init_cache_kvs=False,
                 training_args=trainer.args,
+                is_available=False,
             )
-            predictor.is_available = False
+            predictor.rollout_use_fake_outputs = trainer.args.rollout_use_fake_outputs
     return predictor
 
 

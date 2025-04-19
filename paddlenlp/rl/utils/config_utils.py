@@ -316,6 +316,28 @@ class TrainingArguments(TrainingArguments):
         default=False,
         metadata={"help": "Whether to balance the number of valid tokens on each dp/sharding rank."},
     )
+    per_device_train_split_batch_size: int = field(
+        default=-1,
+        metadata={"help": "Batch size per device for model training forward."},
+    )
+    rollout_use_fake_outputs: bool = field(
+        default=False,
+        metadata={"help": "Rollout use fake outputs for model training."},
+    )
+    rollout_use_dynamic_insert: bool = field(
+        default=True,
+        metadata={"help": "Rollout use dynamic insert for model inference."},
+    )
+    rollout_continue_batching_batch_size: int = field(
+        default=1,
+        metadata={"help": "Batch size to rollout using continue batching."},
+    )
+    rollout_quant_type: str = field(
+        default="",
+        metadata={
+            "help": "Quantization type. Supported values: a8w8, a8w8c8, a8w8_fp8, a8w8c8_fp8, weight_only_int4, weight_only_int8"
+        },
+    )
 
     def __post_init__(self):
         """
