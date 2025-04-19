@@ -1296,7 +1296,7 @@ class DygraphBlockInferencePredictor(BlockInferencePredictorMixin):
         self.model_inputs["step_idx"][pos, 0] = 1
         self.model_inputs["not_need_stop"][0] = True
 
-        num_prefill_blocks = (length + self.block_size - 1) // self.block_size
+        num_prefill_blocks = length // self.block_size
         num_decoder_blocks = (self.config.max_length + self.block_size - 1) // self.block_size
         self.model_inputs["block_tables"][pos, :num_prefill_blocks] = np.array(self.prefill_blocks[query_id])
         self.model_inputs["block_tables"][pos, num_prefill_blocks] = np.array(self.tail_blocks[task_id])
@@ -1352,7 +1352,7 @@ class DygraphBlockInferencePredictor(BlockInferencePredictorMixin):
         block_id = 0
         for inst in self.input_ids:
             length = len(inst)
-            num_blocks = (length + self.block_size - 1) // self.block_size
+            num_blocks = length // self.block_size
             self.prefill_blocks.append(list(range(block_id, block_id + num_blocks)))
             block_id += num_blocks
         # print("prefill_blocks", self.prefill_blocks)
@@ -1472,7 +1472,7 @@ class DygraphBlockInferencePredictor(BlockInferencePredictorMixin):
                 self.model_inputs["seq_lens_encoder"][0] = length
                 self.model_inputs["stop_flags"][0] = False
 
-                num_prefill_blocks = (length + self.block_size - 1) // self.block_size
+                num_prefill_blocks = length // self.block_size
                 self.model_inputs["block_tables"][0, :num_prefill_blocks] = np.array(self.prefill_blocks[i])
                 self.model_inputs["block_tables"][0, num_prefill_blocks] = np.array(self.tail_blocks[i])
                 self.model_inputs["result_id"][0][:1] = np.arange(i, i + 1)
