@@ -100,6 +100,9 @@ class PolicyPredictor(DygraphBlockInferencePredictor):
             input_ids_list.append(row_ids)
 
         if self.rollout_use_fake_outputs:
+            self.cache_kvs = None
+            self.model_inputs["cache_kvs"] = None
+            paddle.device.cuda.empty_cache()
             return (paddle.ones([bs, kwargs.get("max_length", self.config.max_length)]) * 1000).cast(input_ids.dtype)
         if self.config.dynamic_insert:
             if (
