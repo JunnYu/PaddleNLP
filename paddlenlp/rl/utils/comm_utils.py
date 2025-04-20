@@ -960,7 +960,18 @@ def split_batch_by_rank(
     return total_batch
 
 
-def process_prompt_and_response(micro_batch, pad_token_id=0):
+def get_pad_to_multiple_of(n, multiple_of):
+    if multiple_of <= 0:
+        raise ValueError("multiple_of 必须是一个正整数")
+
+    remainder = n % multiple_of
+    if remainder == 0:
+        return n
+    else:
+        return n + (multiple_of - remainder)
+
+
+def process_prompt_and_response(micro_batch, pad_token_id=0, pad_to_multiple_of=None):
     """
     Processes prompt and response from the total batch: slices prompt, extracts and pads responses,
     updates input_ids, position_ids, and log_probs accordingly.
@@ -1001,8 +1012,14 @@ def process_prompt_and_response(micro_batch, pad_token_id=0):
         paddle.nn.functional.pad(t, [0, max_response_len - t.shape[0]], value=pad_token_id) for t in response_tensors
     ]
     response = paddle.stack(padded_response_tensors, axis=0)
-
     micro_batch["input_ids"] = paddle.concat([micro_batch["prompt"], response], axis=1)
+    if pad_to_multiple_of is not None:
+        orig_len = micro_batch["input_ids"].shape[1]
+        pad_len = get_pad_to_multiple_of(orig_len, pad_to_multiple_of)
+        if pad_len != orig_len:
+            micro_batch["input_ids"] = paddle.nn.functional.pad(
+                micro_batch["input_ids"], [0, pad_len - orig_len], value=pad_token_id
+            )
     micro_batch["position_ids"] = make_position_ids_from_input_ids(micro_batch["input_ids"])
 
     if "log_probs" in micro_batch:
