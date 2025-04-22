@@ -92,8 +92,7 @@ class PolicyPredictor(DygraphBlockInferencePredictor):
         self.is_available = False
 
     @paddle.no_grad()
-    def predict(self, input_ids: paddle.Tensor = None, **kwargs):
-        bs = input_ids.shape[0]
+    def predict(self, input_ids: paddle.Tensor = None, repeat_num=1, **kwargs):
         input_ids_list = []
         for row in input_ids:
             row_ids = process_row(row, remove_value=self.tokenizer.pad_token_id, remove_side="left").tolist()
@@ -103,6 +102,7 @@ class PolicyPredictor(DygraphBlockInferencePredictor):
             self.cache_kvs = None
             self.model_inputs["cache_kvs"] = None
             paddle.device.cuda.empty_cache()
+            bs = input_ids.shape[0] * repeat_num
             return (paddle.ones([bs, kwargs.get("max_length", self.config.max_length)]) * 1000).cast(input_ids.dtype)
         if self.config.dynamic_insert:
             if (
@@ -123,6 +123,7 @@ class PolicyPredictor(DygraphBlockInferencePredictor):
                         return_tokens=True,
                         all_rank_return=True,
                         detokenize=False,
+                        repeat_num=repeat_num,
                         **kwargs,
                     )[-1]
                     dist.all_reduce = ori_all_reduce
@@ -322,6 +323,7 @@ class InferEvalModel:
 
     def generate(self, *args, **kwargs):
         do_eval = kwargs.pop("do_eval", False)
+        repeat_num = kwargs.pop("repeat_num", 1)
         if policy_predictor is None or not policy_predictor.is_available:
             return self.model.generate(*args, **kwargs)
 
@@ -336,6 +338,9 @@ class InferEvalModel:
                     "temperature": 1.0,
                 }
             )
-        outputs = policy_predictor.predict(input_ids=input_ids, **kwargs)
+        outputs = policy_predictor.predict(input_ids=input_ids, repeat_num=repeat_num, **kwargs)
+        if repeat_num > 1:
+            input_ids = input_ids.repeat_interleave(repeat_num, axis=0)
+
         outputs = paddle.concat([input_ids, outputs], axis=-1)
         return (outputs,)

@@ -116,13 +116,11 @@ class ActorReferenceTrainer(RLTrainer):
         #     else make_position_ids(attention_mask)
         # )
 
-        if self.args.num_return_sequences > 1:
-            input_ids = input_ids.repeat_interleave(self.args.num_return_sequences, axis=0)
-            # raw_dtype = attention_mask.dtype
-            # attention_mask = (
-            #     attention_mask.cast("int32").repeat_interleave(self.args.num_return_sequences, axis=0).cast(raw_dtype)
-            # )
-            # position_ids = position_ids.repeat_interleave(self.args.num_return_sequences, axis=0)
+        # raw_dtype = attention_mask.dtype
+        # attention_mask = (
+        #     attention_mask.cast("int32").repeat_interleave(self.args.num_return_sequences, axis=0).cast(raw_dtype)
+        # )
+        # position_ids = position_ids.repeat_interleave(self.args.num_return_sequences, axis=0)
 
         with guard_set_args(self.model.config, {"use_fused_head_and_loss_fn": False}):
             sequences = self.get_model(False).generate(
@@ -132,7 +130,11 @@ class ActorReferenceTrainer(RLTrainer):
                 generation_config=self.generation_config,
                 synced_gpus=ShardingOption.FULL_SHARD in self.args.sharding,
                 do_eval=do_eval,
+                repeat_num=self.args.num_return_sequences,
             )[0]
+
+        if self.args.num_return_sequences > 1:
+            input_ids = input_ids.repeat_interleave(self.args.num_return_sequences, axis=0)
 
         if self.args.use_rm_server:
             label_ids = prompt_only_batch["label_ids"]
