@@ -338,6 +338,10 @@ class TrainingArguments(TrainingArguments):
             "help": "Quantization type. Supported values: a8w8, a8w8c8, a8w8_fp8, a8w8c8_fp8, weight_only_int4, weight_only_int8"
         },
     )
+    use_remove_padding: bool = field(
+        default=True,
+        metadata={"help": "Whether to remove paddings before computing transformer."},
+    )
 
     def __post_init__(self):
         """

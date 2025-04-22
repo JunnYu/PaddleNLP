@@ -17,7 +17,6 @@
 import argparse
 import json
 import logging
-import random
 import threading
 import traceback
 from typing import List
@@ -46,7 +45,7 @@ class Response(BaseModel):
 def compute_score(
     solution_str: str, ground_truth: str, query=None, format_reward: int = 1, answer_reward: float = 1.0
 ):
-    score = float(random.randint(0, 4) - 1)
+    score = float(1.0)
     print(
         f"==============================================================={ground_truth}=========================================================================="
     )

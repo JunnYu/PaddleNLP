@@ -411,6 +411,10 @@ class RLHFPPOMixedLoss(nn.Layer):
         sequence_mask,
         ref_log_probs=None,
         response_start=0,
+        pad_size=0,
+        raw_input_ids=None,
+        indices=None,
+        raw_input_shape=None,
     ):
         """
         计算损失函数，包含两部分：soft target loss和PPO loss。
@@ -436,6 +440,17 @@ class RLHFPPOMixedLoss(nn.Layer):
             logits = logits / self.temperature if self.temperature > 0.0 else logits
         else:
             hidden_states, weight, bias, transpose_y = logits
+            if indices is not None:
+                input_ids = raw_input_ids
+                if pad_size > 0:
+                    hidden_states = hidden_states[:, :-pad_size]
+                print("===>>>LogProb Raw shape", raw_input_shape, "New shape", hidden_states.shape[:2])
+                from ..utils.bert_padding import pad_input
+
+                hidden_states = pad_input(
+                    hidden_states.squeeze(0), indices, batch=raw_input_shape[0], seqlen=raw_input_shape[1]
+                ).contiguous()
+
             if self.use_fp32_compute and hidden_states.dtype != paddle.float32:
                 hidden_states = hidden_states.cast(paddle.float32)
                 weight = weight.cast(paddle.float32)

@@ -231,6 +231,24 @@ class ActorReferenceTrainer(RLTrainer):
             )
             current_position_ids = position_ids[start_index:end_index] if position_ids is not None else None
 
+            labels = current_input_ids[:, response_start + 1 :]
+            if self.args.use_remove_padding:
+                from ..utils.bert_padding import prepare_flashmask_inputs
+
+                update_inputs = prepare_flashmask_inputs(
+                    current_input_ids,
+                    current_position_ids,
+                    self.tokenizer.pad_token_id,
+                    self.model.config.sequence_parallel,
+                    self.model.config.tensor_parallel_degree,
+                )
+                current_input_ids = update_inputs["input_ids"]
+                current_position_ids = update_inputs["position_ids"]
+                current_startend_row_indices = update_inputs["attn_mask_startend_row_indices"]
+                indices = update_inputs["indices"]
+                raw_input_shape = update_inputs["raw_input_shape"]
+                pad_size = update_inputs["pad_size"]
+
             logits = self.model(
                 current_input_ids,
                 position_ids=current_position_ids,
@@ -243,22 +261,29 @@ class ActorReferenceTrainer(RLTrainer):
                 logits = logits.cast(paddle.float32)
             logits = logits / self.args.temperature if self.args.temperature > 0.0 else logits
 
+            if self.args.use_remove_padding:
+                from ..utils.bert_padding import pad_input
+
+                if pad_size > 0:
+                    logits = logits[:, :-pad_size]
+                print("===>>>LogProb Raw shape", raw_input_shape, "New shape", logits.shape[:2])
+                logits = pad_input(
+                    logits.squeeze(0), indices, batch=raw_input_shape[0], seqlen=raw_input_shape[1]
+                ).contiguous()
+
             if self.model.config.tensor_parallel_degree > 1 and self.model.config.tensor_parallel_output:
                 log_probs = (
-                    -ParallelCrossEntropy()(
-                        logits[:, response_start:-1].astype("float32"), current_input_ids[:, response_start + 1 :]
-                    )
+                    -ParallelCrossEntropy()(logits[:, response_start:-1].astype("float32"), labels)
                     .squeeze(axis=-1)
                     .astype(logits.dtype)
                 )
             else:
-                log_probs = gather_log_probabilities(
-                    logits[:, response_start:-1], current_input_ids[:, response_start + 1 :]
-                )
+                log_probs = gather_log_probabilities(logits[:, response_start:-1], labels)
 
             log_probs_list.append(log_probs)
             # Set logits to None to save memory
             logits = None
+            paddle.device.synchronize()
             paddle.device.cuda.empty_cache()
 
         return paddle.concat(log_probs_list, axis=0)
@@ -286,6 +311,19 @@ class ActorReferenceTrainer(RLTrainer):
             "response_start": response_start,
             "attn_mask_startend_row_indices": attn_mask_startend_row_indices,
         }
+        if self.args.use_remove_padding:
+            from ..utils.bert_padding import prepare_flashmask_inputs
+
+            policy_trainer_inputs["raw_input_ids"] = input_ids
+            update_inputs = prepare_flashmask_inputs(
+                input_ids,
+                position_ids,
+                self.tokenizer.pad_token_id,
+                self.model.config.sequence_parallel,
+                self.model.config.tensor_parallel_degree,
+            )
+            # new add input_ids_rolled, pad_size, indices
+            policy_trainer_inputs.update(update_inputs)
 
         if self.args.rl_algorithm == "grpo":
             policy_trainer_inputs.update({"ref_log_probs": rl_batch["ref_log_probs"]})
