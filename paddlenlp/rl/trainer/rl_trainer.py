@@ -771,6 +771,20 @@ class RLTrainer(Trainer):
         else:
             inputs = [inputs]
 
+        if self.args.use_remove_padding:
+            from ..utils.bert_padding import prepare_flashmask_inputs
+
+            for each_inputs in inputs:
+                each_inputs["raw_input_ids"] = each_inputs["input_ids"]
+                update_inputs = prepare_flashmask_inputs(
+                    each_inputs["input_ids"],
+                    each_inputs["position_ids"],
+                    self.tokenizer.pad_token_id,
+                    self.model.config.sequence_parallel,
+                    self.model.config.tensor_parallel_degree,
+                )
+                # new add input_ids_rolled, pad_size, indices
+                each_inputs.update(update_inputs)
         new_train_step_vars = super().full_training_step(inputs, **train_step_vars)
 
         # minimally update

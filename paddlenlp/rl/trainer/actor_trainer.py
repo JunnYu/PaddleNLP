@@ -313,20 +313,6 @@ class ActorReferenceTrainer(RLTrainer):
             "response_start": response_start,
             "attn_mask_startend_row_indices": attn_mask_startend_row_indices,
         }
-        if self.args.use_remove_padding:
-            from ..utils.bert_padding import prepare_flashmask_inputs
-
-            policy_trainer_inputs["raw_input_ids"] = input_ids
-            update_inputs = prepare_flashmask_inputs(
-                input_ids,
-                position_ids,
-                self.tokenizer.pad_token_id,
-                self.model.config.sequence_parallel,
-                self.model.config.tensor_parallel_degree,
-            )
-            # new add input_ids_rolled, pad_size, indices
-            policy_trainer_inputs.update(update_inputs)
-
         if self.args.rl_algorithm == "grpo":
             policy_trainer_inputs.update({"ref_log_probs": rl_batch["ref_log_probs"]})
         else:
