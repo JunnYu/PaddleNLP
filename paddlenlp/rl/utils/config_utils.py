@@ -339,7 +339,7 @@ class TrainingArguments(TrainingArguments):
         },
     )
     use_remove_padding: bool = field(
-        default=True,
+        default=False,
         metadata={"help": "Whether to remove paddings before computing transformer."},
     )
 
