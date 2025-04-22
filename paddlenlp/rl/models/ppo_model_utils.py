@@ -444,7 +444,7 @@ class RLHFPPOMixedLoss(nn.Layer):
                 input_ids = raw_input_ids
                 if pad_size > 0:
                     hidden_states = hidden_states[:, :-pad_size]
-                print("===>>>LogProb Raw shape", raw_input_shape, "New shape", hidden_states.shape[:2])
+                print("===>>>Train Raw shape", raw_input_shape, "New shape", hidden_states.shape[:2])
                 from ..utils.bert_padding import pad_input
 
                 hidden_states = pad_input(
