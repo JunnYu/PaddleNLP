@@ -143,7 +143,6 @@ class PolicyPredictor(DygraphBlockInferencePredictor):
 
     @paddle.no_grad()
     def set_state_dict(self, model, offload_model=True):
-        self.model.set_state_dict(model.state_dict())
         if offload_model:
             offload_place = paddle.CUDAPinnedPlace()
             state_dict = model.state_dict()
@@ -151,6 +150,8 @@ class PolicyPredictor(DygraphBlockInferencePredictor):
                 cpu_arg = v._copy_to(offload_place, blocking=False)
                 cpu_arg._share_buffer_to(v)
         paddle.device.synchronize()
+        paddle.device.cuda.empty_cache()
+        self.model.set_state_dict(model.state_dict())
 
 
 policy_predictor: PolicyPredictor = None

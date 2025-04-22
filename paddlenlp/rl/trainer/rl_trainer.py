@@ -784,6 +784,7 @@ class RLTrainer(Trainer):
                     self.model.config.tensor_parallel_degree,
                 )
                 # new add input_ids_rolled, pad_size, indices
+                update_inputs.pop("input_ids_rmpad_rolled", None)
                 each_inputs.update(update_inputs)
         new_train_step_vars = super().full_training_step(inputs, **train_step_vars)
 

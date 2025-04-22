@@ -87,6 +87,70 @@ from .trainer_utils import (
     process_row,
 )
 
+# def check_memory_usage(msg=""):
+#     """
+#     检查内存使用情况。
+
+#     Args:
+#         msg (str): 附加到输出消息前缀的字符串。默认为空字符串。
+
+#     Returns:
+#         None
+
+#     """
+#     import subprocess
+
+#     GB = 1024.0 * 1024.0 * 1024.0
+#     mem_dict = {}
+#     mem_dict["max_memory_allocated_size"] = paddle.device.cuda.max_memory_allocated() / GB
+#     mem_dict["max_memory_reserved_size"] = paddle.device.cuda.max_memory_reserved() / GB
+#     mem_dict["memory_allocated_size"] = paddle.device.cuda.memory_allocated() / GB
+#     mem_dict["memory_reserved_size"] = paddle.device.cuda.memory_reserved() / GB
+#     mem_msg = f"checking gpu memory usage {msg}:"
+#     for key in mem_dict:
+#         mem_msg += f"\n{key}: {mem_dict[key]}GB"
+#     logger.warning(mem_msg)
+
+#     if hasattr(paddle.device.cuda, "max_pinned_memory_allocated"):
+#         mem_dict = {}
+#         mem_dict["max_memory_allocated_size"] = paddle.device.cuda.max_pinned_memory_allocated() / GB
+#         mem_dict["max_memory_reserved_size"] = paddle.device.cuda.max_pinned_memory_reserved() / GB
+#         mem_dict["memory_allocated_size"] = paddle.device.cuda.pinned_memory_allocated() / GB
+#         mem_dict["memory_reserved_size"] = paddle.device.cuda.pinned_memory_reserved() / GB
+#         mem_msg = f"checking pinned memory usage {msg}:"
+#         for key in mem_dict:
+#             mem_msg += f"\n{key}: {mem_dict[key]}GB"
+#         logger.warning(mem_msg)
+
+#     if hasattr(paddle.device, "cpu") and hasattr(paddle.device.cpu, "max_memory_allocated"):
+#         mem_dict = {}
+#         mem_dict["max_memory_allocated_size"] = paddle.device.cpu.max_memory_allocated() / GB
+#         mem_dict["max_memory_reserved_size"] = paddle.device.cpu.max_memory_reserved() / GB
+#         mem_dict["memory_allocated_size"] = paddle.device.cpu.memory_allocated() / GB
+#         mem_dict["memory_reserved_size"] = paddle.device.cpu.memory_reserved() / GB
+#         mem_msg = f"checking cpu memory usage {msg}:"
+#         for key in mem_dict:
+#             mem_msg += f"\n{key}: {mem_dict[key]}GB"
+#         logger.warning(mem_msg)
+
+#     # Execute the command and get the output
+#     result = subprocess.run(["free", "-h"], capture_output=True, text=True)
+#     lines = result.stdout.strip().split("\n")
+
+#     # Extract data
+#     mem_data = lines[1].split()
+#     # swap_data = lines[2].split()
+
+#     # Format and print
+#     formatted_output = "checking CPU memory usage: {} Memory - Total: {}, Used: {}, Free: {} Available:{}".format(
+#         msg, mem_data[1], mem_data[2], mem_data[3], mem_data[-1]
+#     )
+#     logger.warning(formatted_output)
+
+
+def check_memory_usage(msg=""):
+    pass
+
 
 class PPOMetric:
     def set_metric_meta(self):
@@ -1385,13 +1449,14 @@ class PPOTrainer(Trainer):
                 else:
                     expand_prompt = prompt_only_batch["input_ids"]
 
+                check_memory_usage("=>1. Before rollout!")
                 timer_scope_actor_model = TimerScope(
                     self.timers,
                     RolloutStages.ACTOR_MODEL_ENABLE_DISABLE,
-                    minus_names=[RolloutStages.GENERATE, RolloutStages.ROLLOUT_LOGPROB],
+                    minus_names=[RolloutStages.GENERATE],
                 )
                 timer_scope_actor_model.start()
-                with reload_and_offload_scope(self, self.actor_model, self.reference_model):
+                with reload_and_offload_scope(self, self.actor_model):
                     timer_scope_rollout = TimerScope(self.timers, RolloutStages.GENERATE)
                     timer_scope_rollout.start()
                     with infer_guard(self.actor_trainer):
@@ -1470,14 +1535,26 @@ class PPOTrainer(Trainer):
                     if self.args.balance_batch:
                         micro_batches = self._balance_batch(micro_batches)
 
-                    # step 2-3: compute logprob for rollout data
-                    with TimerScope(self.timers, RolloutStages.ROLLOUT_LOGPROB):
-                        for micro_batch in micro_batches:
-                            with TimerScope(self.timers, RolloutStages.ROLLOUT_OLD_LOGPROB):
-                                micro_batch["log_probs"] = self.actor_trainer.compute_logprob(**micro_batch)
-                            with TimerScope(self.timers, RolloutStages.ROLLOUT_REF_LOGPROB):
-                                micro_batch["ref_log_probs"] = self.reference_trainer.compute_logprob(**micro_batch)
                 timer_scope_actor_model.stop()
+                check_memory_usage("=>2. After rollout!")
+
+                with TimerScope(self.timers, RolloutStages.ROLLOUT_LOGPROB):
+                    with reload_and_offload_scope(self, self.reference_model):
+                        check_memory_usage("=>3. After reload ref_model!")
+                        with TimerScope(self.timers, RolloutStages.ROLLOUT_REF_LOGPROB):
+                            for micro_batch in micro_batches:
+                                micro_batch["ref_log_probs"] = self.reference_trainer.compute_logprob(**micro_batch)
+
+                    check_memory_usage("=>4. After compute ref_model log_probs!")
+
+                    with reload_and_offload_scope(self, self.actor_model):
+                        check_memory_usage("=>5. After reload actor_model!")
+                        with TimerScope(self.timers, RolloutStages.ROLLOUT_OLD_LOGPROB):
+                            # actoer 模型夹杂回来。
+                            for micro_batch in micro_batches:
+                                micro_batch["log_probs"] = self.actor_trainer.compute_logprob(**micro_batch)
+
+                    check_memory_usage("=>6. After compute actor_model log_probs!")
 
                 # step 2-2: compute reward for rollout data
                 with TimerScope(

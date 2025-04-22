@@ -170,6 +170,8 @@ def prepare_flashmask_inputs(
         rearrange(position_ids.unsqueeze(-1), "b s ... -> (b s) ..."), indices
     ).transpose([1, 0])
 
+    input_ids_rmpad_rolled = paddle.roll(input_ids_rmpad, shifts=-1, axis=1)  # (1, total_nnz)
+
     # startend_row_indices
     cum_sum = attn_mask.sum(1).cumsum(0, dtype="int32").unsqueeze(1)
     valid_cum_sum = (attn_mask * cum_sum).flatten()
@@ -180,6 +182,9 @@ def prepare_flashmask_inputs(
         input_ids_rmpad, position_ids_rmpad, pad_size = sequence_parallel_pad_inputs(
             input_ids_rmpad, position_ids_rmpad, sp_size=sp_size, pad_value=pad_token_id
         )
+        input_ids_rmpad_rolled = sequence_parallel_pad_inputs(input_ids_rmpad_rolled, sp_size=sp_size, pad_value=-100)[
+            0
+        ]
         attn_mask_startend_row_indices_rmpad = sequence_parallel_pad_inputs(
             attn_mask_startend_row_indices_rmpad, sp_size=sp_size
         )[0]
@@ -187,6 +192,7 @@ def prepare_flashmask_inputs(
     return {
         "input_ids": input_ids_rmpad.contiguous(),
         "position_ids": position_ids_rmpad.contiguous(),
+        "input_ids_rmpad_rolled": input_ids_rmpad_rolled.contiguous(),
         "attn_mask_startend_row_indices": attn_mask_startend_row_indices_rmpad.contiguous(),
         "pad_size": pad_size,
         "indices": indices,

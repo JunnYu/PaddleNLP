@@ -247,6 +247,7 @@ class ActorReferenceTrainer(RLTrainer):
                 current_input_ids = update_inputs["input_ids"]
                 current_position_ids = update_inputs["position_ids"]
                 current_startend_row_indices = update_inputs["attn_mask_startend_row_indices"]
+                current_input_ids_rmpad_rolled = update_inputs["input_ids_rmpad_rolled"]
                 indices = update_inputs["indices"]
                 raw_input_shape = update_inputs["raw_input_shape"]
                 pad_size = update_inputs["pad_size"]
@@ -261,26 +262,35 @@ class ActorReferenceTrainer(RLTrainer):
 
             if self.args.use_fp32_compute and logits.dtype != paddle.float32:
                 logits = logits.cast(paddle.float32)
-            logits = logits / self.args.temperature if self.args.temperature > 0.0 else logits
+            logits = logits.scale_(1 / self.args.temperature) if self.args.temperature > 0.0 else logits
 
             if self.args.use_remove_padding:
                 from ..utils.bert_padding import pad_input
 
+                if self.model.config.tensor_parallel_degree > 1 and self.model.config.tensor_parallel_output:
+                    log_probs = (
+                        -ParallelCrossEntropy()(logits.astype("float32"), current_input_ids_rmpad_rolled)
+                        .squeeze(axis=-1)
+                        .astype(logits.dtype)
+                    )
+                else:
+                    log_probs = gather_log_probabilities(logits, current_input_ids_rmpad_rolled)
                 if pad_size > 0:
-                    logits = logits[:, :-pad_size]
-                print("===>>>LogProb Raw shape", raw_input_shape, "New shape", logits.shape[:2])
-                logits = pad_input(
-                    logits.squeeze(0), indices, batch=raw_input_shape[0], seqlen=raw_input_shape[1]
-                ).contiguous()
-
-            if self.model.config.tensor_parallel_degree > 1 and self.model.config.tensor_parallel_output:
-                log_probs = (
-                    -ParallelCrossEntropy()(logits[:, response_start:-1].astype("float32"), labels)
-                    .squeeze(axis=-1)
-                    .astype(logits.dtype)
-                )
+                    log_probs = log_probs[:, :-pad_size]
+                print("===>>>LogProb RAW shape", raw_input_shape, "NEW shape", log_probs.shape[:2])
+                log_probs = pad_input(
+                    log_probs.transpose([1, 0]), indices, batch=raw_input_shape[0], seqlen=raw_input_shape[1]
+                ).squeeze(-1)
+                log_probs = log_probs[:, response_start:-1].contiguous()
             else:
-                log_probs = gather_log_probabilities(logits[:, response_start:-1], labels)
+                if self.model.config.tensor_parallel_degree > 1 and self.model.config.tensor_parallel_output:
+                    log_probs = (
+                        -ParallelCrossEntropy()(logits[:, response_start:-1].astype("float32"), labels)
+                        .squeeze(axis=-1)
+                        .astype(logits.dtype)
+                    )
+                else:
+                    log_probs = gather_log_probabilities(logits[:, response_start:-1], labels)
 
             log_probs_list.append(log_probs)
             # Set logits to None to save memory
