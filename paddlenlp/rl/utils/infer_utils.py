@@ -134,6 +134,7 @@ class PolicyPredictor(DygraphBlockInferencePredictor):
                     return_tokens=True,
                     all_rank_return=True,
                     detokenize=False,
+                    repeat_num=repeat_num,
                     **kwargs,
                 )[-1]
             return paddle.to_tensor(outputs, dtype=input_ids.dtype)
