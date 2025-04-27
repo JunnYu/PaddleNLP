@@ -388,6 +388,7 @@ def full_training_step(self: Trainer, inputs: Dict[str, paddle.Tensor], **kwargs
     if dp_master_grad:
         is_no_sync = True
 
+    self.args.gradient_accumulation_steps = len(inputs) * self.args.gradient_accumulation_steps
     for inputs_tmp in inputs:
         if is_no_sync:
             # Avoid unnecessary DDP synchronization since there will be no backward pass on this example.
@@ -397,7 +398,7 @@ def full_training_step(self: Trainer, inputs: Dict[str, paddle.Tensor], **kwargs
             tr_loss_step = self.training_step(model, inputs_tmp)
         tr_loss += tr_loss_step
 
-    tr_loss += tr_loss_step
+    self.args.gradient_accumulation_steps = self.args.gradient_accumulation_steps // len(inputs)
 
     if (step_control + 1) % args.gradient_accumulation_steps == 0 or (
         # last step in epoch but step is always smaller than gradient_accumulation_steps
